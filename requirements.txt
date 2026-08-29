@@ -1,5 +1,5 @@
-numpy==1.26.4
+streamlit
 yfinance
 pandas
 plotly
-gradio
+numpy
