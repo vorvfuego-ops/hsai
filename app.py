@@ -1,221 +1,161 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import traceback
+import borsapy as bp
 
 # Sayfa Ayarları
-st.set_page_config(page_title="AI Borsa Analiz Sistemi", layout="wide")
+st.set_page_config(page_title="BIST AI Analiz Sistemi", layout="wide")
+
+# --- NAVİGASYON STATE YÖNETİMİ ---
+if "sayfa" not in st.session_state:
+    st.session_state.sayfa = "Ana Sayfa"
+if "secili_hisse" not in st.session_state:
+    st.session_state.secili_hisse = "GARAN.IS"
+
+def ana_sayfaya_don():
+    st.session_state.sayfa = "Ana Sayfa"
+    st.rerun()
+
+def analiz_et(hisse):
+    st.session_state.secili_hisse = hisse
+    st.session_state.sayfa = "Analiz"
+    st.rerun()
 
 # --- YARDIMCI FONKSİYONLAR ---
-@st.cache_data(ttl=900)
-def veri_cek(sembol, baslangic, bitis):
+@st.cache_data(ttl=600)
+def bist_veri_cek(sembol, period="6mo"):
+    """BIST verilerini borsapy ile çeker."""
     try:
-        # Geçmiş tarih kontrolü (Bugün veya gelecekse 1 gün geri al)
-        if baslangic >= bitis:
-            baslangic = (bitis - timedelta(days=10)).strftime('%Y-%m-%d')
-            
-        df = yf.download(sembol, start=baslangic, end=bitis, progress=False, auto_adjust=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.dropna()
-        return df
-    except:
+        sembol = sembol.replace(".IS", "")
+        hisse = bp.Ticker(sembol)
+        df = hisse.history(period=period)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            return df
+        return pd.DataFrame()
+    except Exception as e:
         return pd.DataFrame()
 
-def safe_float(val):
-    if isinstance(val, pd.Series):
-        return float(val.iloc[0])
-    return float(val)
+@st.cache_data(ttl=300)
+def getiri_hesapla(sembol):
+    """1 saatlik verilerle yükseliş potansiyeli (yön) hesaplar."""
+    try:
+        sembol = sembol.replace(".IS", "")
+        hisse = bp.Ticker(sembol)
+        # 1 saatlik mumlar (Son 1 ay)
+        df_1h = hisse.history(period="1mo", interval="1h")
+        if df_1h.empty or len(df_1h) < 20:
+            return 0, 0
+        
+        fiyat = df_1h['Close'].iloc[-1]
+        # Basit RSI formülü (14 periyot)
+        delta = df_1h['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        son_rsi = float(rsi.iloc[-1])
+        
+        # Potansiyel yön tahmini (0-100 arası yükseliş potansiyeli)
+        potansiyel = max(0, min(100, (son_rsi - 40) * 2.5))
+        getiri = ((fiyat / df_1h['Close'].iloc[0]) - 1) * 100
+        
+        return potansiyel, getiri
+    except:
+        return 0, 0
 
-def sembol_duzelt(sembol):
-    sembol = sembol.strip().upper()
-    if sembol.startswith("BIST-"): sembol = sembol.split("-")[1]
-    elif sembol.startswith("BIST:"): sembol = sembol.split(":")[1]
-    if not sembol.endswith(".IS") and not sembol.endswith(".SI"):
-        sembol = f"{sembol}.IS"
-    return sembol
-
-# --- ARAYÜZ ---
-st.title("📈 AI Destekli Borsa Analiz Sistemi")
-st.caption("Güncel verilerle yüksek getiri potansiyelli hisseleri keşfedin.")
-
-bugun = datetime.now()
-varsayilan_baslangic = bugun - timedelta(days=180)
-
-with st.sidebar:
-    st.header("⚙️ Parametreler")
-    st.divider()
+# --- UYGULAMA ---
+if st.session_state.sayfa == "Ana Sayfa":
+    st.title("📈 BIST AI Destekli Analiz Sistemi")
+    st.caption("Türkiye piyasası için güncel verilerle yüksek potansiyelli hisseleri keşfedin.")
     
     POPULER = ["GARAN.IS", "AKBNK.IS", "ISCTR.IS", "YKBNK.IS", "THYAO.IS", "ASELS.IS", "EREGL.IS", "BIMAS.IS", "SISE.IS", "SASA.IS"]
-    secenekler = list(dict.fromkeys(POPULER))
     
-    ticker_input = st.selectbox("📊 Hisse Sembolü", options=secenekler, index=0)
-    date_input = st.date_input("📅 Başlangıç Tarihi", value=varsayilan_baslangic)
-    date_input_str = date_input.strftime('%Y-%m-%d')
+    st.subheader("🔥 Getiri Potansiyeli Yüksek Hisseler")
+    st.markdown("(1 saatlik verilerle son 1 aylık trend değerlendirmesi)")
     
-    analiz_btn = st.button("🚀 Analizi Başlat", type="primary", width='stretch')
-
-    st.divider()
-    st.caption(f"Analiz Tarihi: {bugun.strftime('%d-%m-%Y')}")
-
-if analiz_btn:
-    sembol = sembol_duzelt(ticker_input)
-    
-    # Tarih hatası kontrolü (Bugün veya gelecekse)
-    if date_input >= bugun.date():
-        st.error("❌ Başlangıç tarihi bugünden önce olmalıdır. Veri çekilemiyor!")
-    else:
-        st.subheader(f"📈 {sembol} Analizi")
-        try:
-            with st.spinner("Veriler çekiliyor ve analiz ediliyor..."):
-                df = veri_cek(sembol, date_input_str, bugun.strftime('%Y-%m-%d'))
-                
-                # Boş veri kontrolü
-                if len(df) < 2:
-                    st.error(f"❌ '{sembol}' için yeterli veri bulunamadı. Lütfen daha eski bir tarih seçin.")
-                else:
-                    # Teknik Göstergeler
-                    df['SMA_20'] = df['Close'].rolling(window=20).mean()
-                    df['SMA_50'] = df['Close'].rolling(window=50).mean()
-                    df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-                    
-                    last_close = safe_float(df['Close'].iloc[-1])
-                    last_sma20 = safe_float(df['SMA_20'].iloc[-1])
-                    last_sma50 = safe_float(df['SMA_50'].iloc[-1])
-                    
-                    # Getiri Hesaplamaları (1 Ay, 3 Ay, 6 Ay)
-                    getiri_1ay = ((last_close / safe_float(df['Close'].iloc[-22])) - 1) * 100 if len(df) > 22 else 0
-                    getiri_3ay = ((last_close / safe_float(df['Close'].iloc[-66])) - 1) * 100 if len(df) > 66 else 0
-                    getiri_6ay = ((last_close / safe_float(df['Close'].iloc[-126])) - 1) * 100 if len(df) > 126 else 0
-                    
-                    # Momentum Skoru (10 Üzerinden)
-                    skor = 0
-                    if last_close > last_sma20: skor += 3
-                    if last_close > last_sma50: skor += 3
-                    if getiri_1ay > 5: skor += 2
-                    if getiri_3ay > 10: skor += 2
-                    
-                    if skor >= 8: signal = "🟢 GÜÇLÜ AL"
-                    elif skor >= 6: signal = "🟡 AL / TUT"
-                    elif skor >= 4: signal = "🟠 TAKİP ET"
-                    else: signal = "🔴 SAT / BEKLE"
-                    
-                    # Profesyonel Metrikler
-                    st.markdown(f"### 📊 Analiz Raporu: {sembol}")
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Son Kapanış", f"${last_close:.2f}")
-                    col2.metric("1 Ay Getiri", f"%{getiri_1ay:.2f}")
-                    col3.metric("3 Ay Getiri", f"%{getiri_3ay:.2f}")
-                    col4.metric("Momentum Skoru", f"{skor}/10")
-                    
-                    st.info(f"**Yapay Zeka Kararı:** {signal} - Getiri potansiyeli ve trend göstergeleri değerlendirildi.")
-                    
-                    # PROFESYONEL GRAFİK (TradingView Tarzı: Mum + Hacim + EMA)
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                        vertical_spacing=0.03, row_heights=[0.7, 0.3])
-                    
-                    # Mum Grafiği
-                    fig.add_trace(go.Candlestick(
-                        x=df.index, open=df['Open'], high=df['High'], 
-                        low=df['Low'], close=df['Close'], name='Fiyat'
-                    ), row=1, col=1)
-                    
-                    # EMA ve SMA Çizgileri
-                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], 
-                        mode='lines', name='SMA 20', line=dict(color='green', width=1.5)), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], 
-                        mode='lines', name='SMA 50', line=dict(color='red', width=1.5)), row=1, col=1)
-                    
-                    # Hacim Grafiği (Alt Kısım)
-                    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], 
-                        name='Hacim', marker_color='gray', opacity=0.5), row=2, col=1)
-                    
-                    fig.update_layout(
-                        title=f'{sembol} Profesyonel Grafik',
-                        xaxis_rangeslider_visible=False,
-                        template='plotly_white',
-                        height=600,
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                    )
-                    fig.update_xaxes(title_text="Tarih", row=2, col=1)
-                    fig.update_yaxes(title_text="Fiyat", row=1, col=1)
-                    fig.update_yaxes(title_text="Hacim", row=2, col=1)
-                    
-                    st.plotly_chart(fig, width='stretch')
-                    
-        except Exception as e:
-            st.error(f"❌ Hata: {e}")
-            with st.expander("Hata Detaylarını Göster"):
-                st.code(traceback.format_exc())
-
-# --- ANA SAYFA (Yüksek Getiri Potansiyelli Hisseler) ---
-else:
-    st.subheader("🔥 Yüksek Getiri Potansiyelli Hisseler (Momentum Analizi)")
-    st.markdown("1, 3 ve 6 aylık getirileri ile SMA ortalamalarına göre skorlanmış en güçlü hisseler.")
-    
-    with st.spinner("Piyasa analiz ediliyor..."):
-        analizler = []
-        for sembol in ["GARAN.IS", "AKBNK.IS", "ISCTR.IS", "YKBNK.IS", "THYAO.IS", "ASELS.IS", "EREGL.IS", "BIMAS.IS", "SISE.IS", "SASA.IS"]:
-            df = veri_cek(sembol, varsayilan_baslangic.strftime('%Y-%m-%d'), bugun.strftime('%Y-%m-%d'))
-            if len(df) > 22:
-                last_close = safe_float(df['Close'].iloc[-1])
-                getiri_1ay = ((last_close / safe_float(df['Close'].iloc[-22])) - 1) * 100
-                getiri_3ay = ((last_close / safe_float(df['Close'].iloc[-66])) - 1) * 100 if len(df) > 66 else 0
-                getiri_6ay = ((last_close / safe_float(df['Close'].iloc[-126])) - 1) * 100 if len(df) > 126 else 0
-                
-                last_sma50 = safe_float(df['Close'].rolling(window=50).mean().iloc[-1])
-                
-                # Getiri Odaklı Skorlama
-                skor = 0
-                if last_close > last_sma50: skor += 3
-                if getiri_1ay > 5: skor += 2
-                if getiri_3ay > 10: skor += 2
-                if getiri_6ay > 20: skor += 3
-                
-                if skor >= 6:
-                    analizler.append({
-                        "Hisse": sembol.replace(".IS", ""),
-                        "Skor": skor,
-                        "Son Fiyat": round(last_close, 2),
-                        "1 Ay %": round(getiri_1ay, 2),
-                        "3 Ay %": round(getiri_3ay, 2),
-                        "6 Ay %": round(getiri_6ay, 2)
-                    })
+    with st.spinner("BIST verileri analiz ediliyor..."):
+        veriler = []
+        for hisse in POPULER:
+            pot, get = getiri_hesapla(hisse)
+            veriler.append({
+                "Hisse": hisse, 
+                "Yükseliş Potansiyeli (%)": round(pot, 1), 
+                "1 Ay Getiri (%)": round(get, 2)
+            })
         
-        if analizler:
-            df_analiz = pd.DataFrame(analizler).sort_values(by="Skor", ascending=False).reset_index(drop=True)
-            
-            # Getiri Tablosu
-            st.dataframe(df_analiz, width='stretch', hide_index=True)
-            
-            st.divider()
-            
-            # En Yüksek Skorlu 3 Hissenin Profesyonel Grafiği
-            st.markdown("### 📈 En Yüksek Potansiyelli 3 Hissenin Performansı (Son 6 Ay)")
-            
-            fig = go.Figure()
-            renkler = ['#1f77b4', '#2ca02c', '#ff7f0e']
-            
-            for i, row in df_analiz.head(3).iterrows():
-                sembol = row['Hisse'] + ".IS"
-                df_graf = veri_cek(sembol, varsayilan_baslangic.strftime('%Y-%m-%d'), bugun.strftime('%Y-%m-%d'))
-                if not df_graf.empty:
-                    df_graf = df_graf.reset_index()
-                    fig.add_trace(go.Scatter(
-                        x=df_graf['Date'], y=df_graf['Close'], mode='lines',
-                        name=row['Hisse'], line=dict(color=renkler[i % len(renkler)], width=2)
-                    ))
-            
-            fig.update_layout(
-                title='Getiri Potansiyeli En Yüksek 3 Hisse',
-                xaxis_title='Tarih', yaxis_title='Fiyat',
-                height=500, template='plotly_white',
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-            )
-            st.plotly_chart(fig, width='stretch')
-            
-        else:
-            st.warning("Şu anda getiri potansiyeli yüksek hisse bulunamadı. Lütfen daha sonra tekrar deneyin.")
+        df_tablo = pd.DataFrame(veriler).sort_values(by="Yükseliş Potansiyeli (%)", ascending=False)
+        
+        # Ana sayfa gezinme butonları
+        st.dataframe(df_tablo, width='stretch', hide_index=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            secim = st.selectbox("Bir hisse seçin (Analiz etmek için):", options=df_tablo['Hisse'].tolist())
+        with col2:
+            if st.button("🚀 Seçilen Hisseleri Analiz Et"):
+                analiz_et(secim)
+
+elif st.session_state.sayfa == "Analiz":
+    sembol = st.session_state.secili_hisse
+    
+    # Üst Bar
+    col_back, col_title = st.columns([1, 5])
+    with col_back:
+        if st.button("← Ana Sayfa"):
+            ana_sayfaya_don()
+    with col_title:
+        st.title(f"📊 {sembol} Analizi")
+    
+    # Veri Çekme
+    df = bist_veri_cek(sembol)
+    
+    if df.empty:
+        st.error("Bu hisse için veri alınamadı. Lütfen daha sonra tekrar deneyin.")
+        if st.button("Ana Sayfaya Dön"):
+            ana_sayfaya_don()
+    else:
+        st.caption(f"Analiz Tarihi: {datetime.now().strftime('%d-%m-%Y %H:%M')} | Veri Kaynağı: BIST (borsapy)")
+        
+        # Güncel Fiyat ve Getiriler
+        last_close = float(df['Close'].iloc[-1])
+        getiri_1yil = ((last_close / float(df['Close'].iloc[0])) - 1) * 100
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Güncel Fiyat", f"₺{last_close:.2f}")
+        col2.metric("Periyot Getirisi", f"%{getiri_1yil:.2f}")
+        col3.metric("Yükseliş Potansiyeli", f"%{getiri_hesapla(sembol)[0]:.1f}")
+        col4.metric("Al/Sat", "🟢 AL" if getiri_hesapla(sembol)[0] >= 50 else "🔴 SAT / BEKLE")
+        
+        # Profesyonel Grafik
+        df['SMA_20'] = df['Close'].rolling(window=20).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
+                                     low=df['Low'], close=df['Close'], name='Fiyat'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], name='SMA 20', line=dict(color='green')), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], name='SMA 50', line=dict(color='red')), row=1, col=1)
+        fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Hacim', marker_color='gray', opacity=0.5), row=2, col=1)
+        
+        fig.update_layout(
+            title=f'{sembol} BIST Grafiği',
+            xaxis_rangeslider_visible=False,
+            template='plotly_white',
+            height=600,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig, width='stretch')
+        
+        # Kullanıcı Seçimi (Getiri Tahmini)
+        st.divider()
+        st.markdown("### 🎯 Kullanıcı Seçimi ile Yükseliş Hedefi")
+        col_sec1, col_sec2 = st.columns(2)
+        with col_sec1:
+            hedef_yuzde = st.number_input("Hedef Getiri (%)", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
+        with col_sec2:
+            if st.button("Hedefi Hesapla"):
+                # Potansiyel hedef fiyat (Mevcut fiyat + Hedef getiri)
+                hedef_fiyat = last_close * (1 + hedef_yuzde / 100)
+                st.success(f"**{sembol}** hissesinde hedef fiyat: ₺{hedef_fiyat:.2f} (Mevcut: ₺{last_close:.2f})")
