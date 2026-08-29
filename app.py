@@ -8,7 +8,7 @@ import borsapy as bp
 # Sayfa Ayarları
 st.set_page_config(page_title="BIST AI Analiz Sistemi", layout="wide")
 
-# --- NAVİGASYON STATE YÖNETİMİ ---
+# --- NAVİGASYON YÖNETİMİ ---
 if "sayfa" not in st.session_state:
     st.session_state.sayfa = "Ana Sayfa"
 if "secili_hisse" not in st.session_state:
@@ -24,7 +24,7 @@ def analiz_et(hisse):
     st.rerun()
 
 # --- YARDIMCI FONKSİYONLAR ---
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def bist_veri_cek(sembol, period="6mo"):
     """BIST verilerini borsapy ile çeker."""
     try:
@@ -49,7 +49,7 @@ def getiri_hesapla(sembol):
             return 0, 0
         
         fiyat = df_1h['Close'].iloc[-1]
-        # Basit RSI formülü (14 periyot)
+        # RSI (14 periyot)
         delta = df_1h['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -70,7 +70,7 @@ if st.session_state.sayfa == "Ana Sayfa":
     st.title("📈 BIST AI Destekli Analiz Sistemi")
     st.caption("Türkiye piyasası için güncel verilerle yüksek potansiyelli hisseleri keşfedin.")
     
-    POPULER = ["GARAN.IS", "AKBNK.IS", "ISCTR.IS", "YKBNK.IS", "THYAO.IS", "ASELS.IS", "EREGL.IS", "BIMAS.IS", "SISE.IS", "SASA.IS"]
+    POPULER = ["GARAN", "AKBNK", "ISCTR", "YKBNK", "THYAO", "ASELS", "EREGL", "BIMAS", "SISE", "SASA"]
     
     st.subheader("🔥 Getiri Potansiyeli Yüksek Hisseler")
     st.markdown("(1 saatlik verilerle son 1 aylık trend değerlendirmesi)")
@@ -80,14 +80,13 @@ if st.session_state.sayfa == "Ana Sayfa":
         for hisse in POPULER:
             pot, get = getiri_hesapla(hisse)
             veriler.append({
-                "Hisse": hisse, 
+                "Hisse": hisse + ".IS", 
                 "Yükseliş Potansiyeli (%)": round(pot, 1), 
                 "1 Ay Getiri (%)": round(get, 2)
             })
         
         df_tablo = pd.DataFrame(veriler).sort_values(by="Yükseliş Potansiyeli (%)", ascending=False)
         
-        # Ana sayfa gezinme butonları
         st.dataframe(df_tablo, width='stretch', hide_index=True)
         
         col1, col2 = st.columns(2)
@@ -120,11 +119,11 @@ elif st.session_state.sayfa == "Analiz":
         
         # Güncel Fiyat ve Getiriler
         last_close = float(df['Close'].iloc[-1])
-        getiri_1yil = ((last_close / float(df['Close'].iloc[0])) - 1) * 100
+        getiri = getiri_hesapla(sembol)[1]
         
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Güncel Fiyat", f"₺{last_close:.2f}")
-        col2.metric("Periyot Getirisi", f"%{getiri_1yil:.2f}")
+        col2.metric("Periyot Getirisi", f"%{getiri:.2f}")
         col3.metric("Yükseliş Potansiyeli", f"%{getiri_hesapla(sembol)[0]:.1f}")
         col4.metric("Al/Sat", "🟢 AL" if getiri_hesapla(sembol)[0] >= 50 else "🔴 SAT / BEKLE")
         
@@ -156,6 +155,5 @@ elif st.session_state.sayfa == "Analiz":
             hedef_yuzde = st.number_input("Hedef Getiri (%)", min_value=1.0, max_value=100.0, value=10.0, step=1.0)
         with col_sec2:
             if st.button("Hedefi Hesapla"):
-                # Potansiyel hedef fiyat (Mevcut fiyat + Hedef getiri)
                 hedef_fiyat = last_close * (1 + hedef_yuzde / 100)
                 st.success(f"**{sembol}** hissesinde hedef fiyat: ₺{hedef_fiyat:.2f} (Mevcut: ₺{last_close:.2f})")
