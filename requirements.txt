@@ -1,6 +1,6 @@
 streamlit
+tradingview-screener
 yfinance
-borsapy
 pandas
 plotly
 numpy
