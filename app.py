@@ -27,19 +27,20 @@ def safe_float(val):
     return float(val)
 
 def sembol_duzelt(sembol):
-    """BIST- öneklerini temizler ve .IS uzantısını ekler."""
+    """BIST formatlarını otomatik düzeltir."""
     sembol = sembol.strip().upper()
     if sembol.startswith("BIST-"):
         sembol = sembol.split("-")[1]
     elif sembol.startswith("BIST:"):
         sembol = sembol.split(":")[1]
     
-    if not sembol.endswith(".IS"):
+    # Eğer .IS uzantısı yoksa ekle (BIST hisseleri ve endeksleri için)
+    if not sembol.endswith(".IS") and not sembol.endswith(".SI") and not sembol.endswith(".F"):
         sembol = f"{sembol}.IS"
     return sembol
 
 def skor_hesapla(df):
-    """Basit strateji ile 10 üzerinden puanlama."""
+    """SMA10 ve SMA50'ye göre 10 üzerinden puanlama."""
     if len(df) < 50:
         return None, None, None, None
     
@@ -66,7 +67,8 @@ st.title("📈 AI Destekli Borsa Analiz Sistemi")
 st.caption("BIST ve Global hisse senetleri için Akıllı Teknik Analiz Paneli")
 
 bugun = datetime.now()
-varsayilan_baslangic = (bugun - timedelta(days=180))  # Son 6 ay
+# Son 6 ayı baz al (Güncel tarih)
+varsayilan_baslangic = (bugun - timedelta(days=180))
 
 # --- KENAR ÇUBUĞU (Sidebar) ---
 with st.sidebar:
@@ -76,8 +78,7 @@ with st.sidebar:
     # Popüler Hisseler Listesi
     POPULER = ["GARAN.IS", "AKBNK.IS", "ISCTR.IS", "YKBNK.IS", "THYAO.IS", "ASELS.IS", "EREGL.IS", "BIMAS.IS", "SISE.IS", "SASA.IS"]
     
-    secenekler = ["GARAN.IS", "AKBNK.IS", "THYAO.IS"] + POPULER
-    secenekler = list(dict.fromkeys(secenekler)) # Tekrarları sil
+    secenekler = list(dict.fromkeys(POPULER)) # Tekrarları sil
     
     ticker_input = st.selectbox("📊 Hisse Sembolü", options=secenekler, index=0)
     date_input = st.date_input("📅 Başlangıç Tarihi", value=varsayilan_baslangic)
@@ -183,7 +184,7 @@ else:
             
             st.divider()
             
-            # En yüksek puanlı 3 hissenin grafiği (TradingView tarzı)
+            # En yüksek puanlı 3 hissenin grafiği
             st.markdown("### 📈 En Yüksek Puanlı 3 Hissenin Son 6 Ay Performansı")
             
             fig = go.Figure()
