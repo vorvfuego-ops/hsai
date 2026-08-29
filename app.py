@@ -3,17 +3,29 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
-from tradingview_screener import Query, col
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# Sayfa Yapılandırması
-st.set_page_config(page_title="BIST Pro AI Terminali", layout="wide")
+# --- GÜVENLİ FLOAT DÖNÜŞTÜRÜCÜ (Hatayı Çözen Kritik Fonksiyon) ---
+def safe_float(val):
+    """yfinance ve pandas sürüm farklılıklarından kaynaklanan TypeError'ları engeller."""
+    if val is None:
+        return 0.0
+    if isinstance(val, pd.Series):
+        if val.empty:
+            return 0.0
+        try:
+            return float(val.iloc[0])
+        except:
+            return 0.0
+    try:
+        return float(val)
+    except:
+        return 0.0
 
 # --- GÜVENLİ API BAĞLANTISI ---
 try:
     import borsapy as bp
-    # Güvenli kimlik doğrulama st.secrets üzerinden yapılır
     bp.set_tradingview_auth(
         session=st.secrets["tradingview"]["session"],
         session_sign=st.secrets["tradingview"]["session_sign"]
@@ -21,25 +33,22 @@ try:
     TV_AUTH = True
 except:
     TV_AUTH = False
-    st.sidebar.warning("⚠️ TradingView kimlik bilgileri bulunamadı. Veriler gecikmeli gelebilir.")
+    st.sidebar.warning("⚠️ TradingView Secrets bulunamadı! Streamlit Cloud'da Settings->Secrets kısmına [tradingview] session ve session_sign ekleyin. (Veriler gecikmeli gelir)")
 
-# --- GELİŞMİŞ CANLI TARAMA (Tüm BIST Hisseleri) ---
+# --- TÜM BIST HİSSELERİNİ TARA (TradingView Screener) ---
 @st.cache_data(ttl=600)
 def tum_bist_hisselerini_getir():
-    """TradingView API üzerinden tüm BIST hisselerini ve göstergelerini çeker."""
     try:
-        # 3000+ veri alanına erişim sağlar [citation:8]
+        from tradingview_screener import Query
         query = (
             Query()
-            .set_markets('turkey')  # Türkiye Piyasası
-            .select(
-                'name', 'close', 'change', 'volume', 'market_cap_basic',
-                'RSI', 'MACD.macd', 'MACD.signal', 'Perf.W', 'Perf.1M',
-                'Perf.3M', 'Perf.6M', 'Perf.YTD', 'sector',
-                'high_all_calc', 'low_all_calc', 'Volatility.W'
-            )
-            .order_by('volume', ascending=False) # İşlem hacmine göre sırala
-            .limit(1000) # BIST 1000'e kadar hisse çek
+            .set_markets('turkey')
+            .select('name', 'close', 'change', 'volume', 'market_cap_basic',
+                    'RSI', 'MACD.macd', 'MACD.signal', 'Perf.W', 'Perf.1M',
+                    'Perf.3M', 'Perf.6M', 'Perf.YTD', 'sector',
+                    'high_all_calc', 'low_all_calc', 'Volatility.W')
+            .order_by('volume', ascending=False)
+            .limit(1000)
         )
         total, df = query.get_scanner_data()
         return df
@@ -48,31 +57,27 @@ def tum_bist_hisselerini_getir():
 
 # --- TAVAN KAPASİTESİ MODELİ (YZ) ---
 def tavan_kapasite_hesapla(sembol):
-    """Geçmiş volatilite ve trend ile tavan potansiyelini hesaplar."""
     try:
-        # Ana veri yedeklemesi yfinance üzerinden
         sembol_uzun = sembol.upper().replace(".IS", "") + ".IS"
         df = yf.download(sembol_uzun, period="6mo", progress=False, auto_adjust=False)
         
         if len(df) < 50:
             return 0, 0, 0
         
-        # Volatilite ve RSI analizi
         df['Return'] = df['Close'].pct_change()
         volatilite = df['Return'].std() * 100
         
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rsi = 100 - (100 / (1 + (gain / loss)))
-        son_rsi = float(rsi.iloc[-1])
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        son_rsi = safe_float(rsi.iloc[-1])
         
-        # Mevcut fiyatın 52 haftalık yüksekliğe oranı (Tavan analizi)
-        yuksek = float(df['High'].max())
-        mevcut = float(df['Close'].iloc[-1])
-        tavan_potansiyeli = ((yuksek - mevcut) / mevcut) * 100
+        yuksek = safe_float(df['High'].max())
+        mevcut = safe_float(df['Close'].iloc[-1])
+        tavan_potansiyeli = ((yuksek - mevcut) / mevcut) * 100 if mevcut > 0 else 0
         
-        # Verimlilik Skoru (10 üzerinden)
         skor = 0
         if son_rsi > 50: skor += 3
         if tavan_potansiyeli > 10: skor += 3
@@ -83,10 +88,11 @@ def tavan_kapasite_hesapla(sembol):
         return 0, 0, 0
 
 # --- ARAYÜZ ---
+st.set_page_config(page_title="BIST Pro AI Terminali", layout="wide")
 st.title("📊 BIST Pro AI Terminali")
 st.caption("TradingView Altyapısı ile Sınırsız Analiz")
 
-tab1, tab2, tab3 = st.tabs(["🚀 Tavan Avcıları", "📈 Ana Sayfa", "🧠 Profesyonel Analiz"])
+tab1, tab2, tab3 = st.tabs(["🚀 Tavan Avcıları", "📈 Piyasa Genel Bakış", "🧠 Profesyonel Analiz"])
 
 # Tab 1: Tavan Avcıları
 with tab1:
@@ -97,21 +103,18 @@ with tab1:
         hisse_verisi = tum_bist_hisselerini_getir()
         
         if not hisse_verisi.empty:
-            # Yükseliş potansiyeline göre filtrele (52 hafta yükseğine uzaklık)
             hisse_verisi['Tavan Potansiyeli (%)'] = ((hisse_verisi['high_all_calc'] - hisse_verisi['close']) / hisse_verisi['close']) * 100
+            hisse_verisi = hisse_verisi.fillna(0) # NaN değerleri temizle
             
-            # Sıralama ve İlk 5
             tavan_hisseleri = hisse_verisi.sort_values(by='Tavan Potansiyeli (%)', ascending=False).head(5)
             
             st.dataframe(tavan_hisseleri[['name', 'close', 'change', 'volume', 'Tavan Potansiyeli (%)', 'RSI', 'sector']], width='stretch', hide_index=True)
             
-            # Tavan listesindeki hisselerin grafikleri
             st.markdown("### 📈 Tavan Hisselerinin Performansı")
             fig = go.Figure()
             
             for i, row in tavan_hisseleri.iterrows():
                 try:
-                    # Grafik verisi çek
                     df_yf = yf.download(row['name'] + ".IS", period="6mo", progress=False)
                     if not df_yf.empty:
                         fig.add_trace(go.Scatter(
@@ -125,26 +128,27 @@ with tab1:
             fig.update_layout(title="Potansiyel Tavan Hisseleri", height=500, template='plotly_white')
             st.plotly_chart(fig, width='stretch')
         else:
-            st.error("BIST verileri çekilemedi. Kimlik doğrulamasını kontrol edin.")
+            st.error("BIST verileri çekilemedi. Secrets ayarlarını kontrol edin.")
 
-# Tab 2: Ana Sayfa (Gelişmiş Görünüm)
+# Tab 2: Piyasa Genel Bakış (Hata Düzeltildi)
 with tab2:
     st.subheader("📊 Piyasa Genel Bakış")
-    st.write("Burada, yüksek hacimli hisselerin anlık durumları listelenir.")
-    # Mevcut popüler hisse listesi
     populer = ["GARAN", "AKBNK", "ISCTR", "YKBNK", "THYAO", "ASELS", "EREGL", "BIMAS", "SISE", "SASA"]
+    
     with st.spinner("Veriler yükleniyor..."):
         veriler = []
         for hisse in populer:
             skor, pot, rsi = tavan_kapasite_hesapla(hisse)
-            # Hacim verisi çekme (gerekli olduğu için yfinance ile)
             df = yf.download(hisse + ".IS", period="1mo", progress=False, auto_adjust=False)
-            hacim = float(df['Volume'].iloc[-1]) if not df.empty else 0
+            
+            # HATANIN ÇÖZÜMÜ: safe_float kullanımı
+            hacim = safe_float(df['Volume'].iloc[-1]) if not df.empty else 0
+            
             veriler.append({
                 "Hisse": hisse, "Skor": skor, 
                 "Tavan Pot. (%)": round(pot, 1), 
                 "RSI": round(rsi, 1),
-                "Hacim": round(hacim / 1_000_000, 1)
+                "Hacim (M)": round(hacim / 1_000_000, 1)
             })
         
         df_veri = pd.DataFrame(veriler).sort_values(by="Skor", ascending=False)
@@ -161,7 +165,6 @@ with tab3:
         if df.empty:
             st.error("Veri bulunamadı.")
         else:
-            # Profesyonel Grafik Yapısı
             df['SMA_20'] = df['Close'].rolling(window=20).mean()
             df['SMA_50'] = df['Close'].rolling(window=50).mean()
             
@@ -172,7 +175,6 @@ with tab3:
             
             fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Hacim', marker_color='gray'), row=2, col=1)
             
-            # Basit RSI Hesabı
             delta = df['Close'].diff()
             gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
             loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
