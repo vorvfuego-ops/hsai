@@ -4,11 +4,11 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np
 import yfinance as yf
-from datetime import datetime
+import requests
 
-# --- GÜVENLİ FLOAT DÖNÜŞTÜRÜCÜ (Hatayı Çözen Kritik Fonksiyon) ---
+# --- GÜVENLİ FLOAT DÖNÜŞTÜRÜCÜ ---
 def safe_float(val):
-    """yfinance ve pandas sürüm farklılıklarından kaynaklanan TypeError'ları engeller."""
+    """Pandas/yfinance sürüm farklılıklarından kaynaklanan TypeError'ları engeller."""
     if val is None:
         return 0.0
     if isinstance(val, pd.Series):
@@ -23,23 +23,35 @@ def safe_float(val):
     except:
         return 0.0
 
-# --- GÜVENLİ API BAĞLANTISI ---
-try:
-    import borsapy as bp
-    bp.set_tradingview_auth(
-        session=st.secrets["tradingview"]["session"],
-        session_sign=st.secrets["tradingview"]["session_sign"]
-    )
-    TV_AUTH = True
-except:
-    TV_AUTH = False
-    st.sidebar.warning("⚠️ TradingView Secrets bulunamadı! Streamlit Cloud'da Settings->Secrets kısmına [tradingview] session ve session_sign ekleyin. (Veriler gecikmeli gelir)")
+# --- TRADINGVIEW HESAP DOĞRULAMA (Otomatik Token) ---
+def get_auth_token():
+    """Kullanıcı adı ve şifreyi kullanarak TradingView token'ını otomatik çeker."""
+    try:
+        username = st.secrets["tradingview"]["username"]
+        password = st.secrets["tradingview"]["password"]
+        
+        sign_in_url = 'https://www.tradingview.com/accounts/signin/'
+        data = {"username": username, "password": password, "remember": "on"}
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        
+        response = requests.post(url=sign_in_url, data=data, headers=headers)
+        
+        if response.status_code == 200 and 'auth_token' in response.json().get('user', {}):
+            return response.json()['user']['auth_token']
+        else:
+            return None
+    except:
+        return None
 
-# --- TÜM BIST HİSSELERİNİ TARA (TradingView Screener) ---
 @st.cache_data(ttl=600)
 def tum_bist_hisselerini_getir():
+    """TradingView Screener ile tüm BIST hisselerini tarar."""
     try:
         from tradingview_screener import Query
+        
+        # Önce token dene, sonra anonim (gecikmeli veri) olarak devam et
+        token = get_auth_token()
+        
         query = (
             Query()
             .set_markets('turkey')
@@ -50,7 +62,13 @@ def tum_bist_hisselerini_getir():
             .order_by('volume', ascending=False)
             .limit(1000)
         )
-        total, df = query.get_scanner_data()
+        
+        # Otomatik token enjeksiyonu
+        try:
+            total, df = query.get_scanner_data(auth_token=token)
+        except:
+            total, df = query.get_scanner_data()
+            
         return df
     except Exception as e:
         return pd.DataFrame()
@@ -92,19 +110,18 @@ st.set_page_config(page_title="BIST Pro AI Terminali", layout="wide")
 st.title("📊 BIST Pro AI Terminali")
 st.caption("TradingView Altyapısı ile Sınırsız Analiz")
 
-tab1, tab2, tab3 = st.tabs(["🚀 Tavan Avcıları", "📈 Piyasa Genel Bakış", "🧠 Profesyonel Analiz"])
+tab1, tab2 = st.tabs(["🚀 Tavan Avcıları", "📈 Profesyonel Analiz"])
 
 # Tab 1: Tavan Avcıları
 with tab1:
     st.subheader("🔥 Yüksek Potansiyelli Tavan Hisseleri")
-    st.info("Bu modül, tüm BIST hisselerini tarayarak 52 haftalık yüksekliğine yakın, yüksek hacimli ve pozitif momentumlu hisseleri listeler.")
     
     with st.spinner("Tüm BIST hisseleri taranıyor..."):
         hisse_verisi = tum_bist_hisselerini_getir()
         
         if not hisse_verisi.empty:
             hisse_verisi['Tavan Potansiyeli (%)'] = ((hisse_verisi['high_all_calc'] - hisse_verisi['close']) / hisse_verisi['close']) * 100
-            hisse_verisi = hisse_verisi.fillna(0) # NaN değerleri temizle
+            hisse_verisi = hisse_verisi.fillna(0)
             
             tavan_hisseleri = hisse_verisi.sort_values(by='Tavan Potansiyeli (%)', ascending=False).head(5)
             
@@ -130,33 +147,9 @@ with tab1:
         else:
             st.error("BIST verileri çekilemedi. Secrets ayarlarını kontrol edin.")
 
-# Tab 2: Piyasa Genel Bakış (Hata Düzeltildi)
+# Tab 2: Profesyonel Analiz
 with tab2:
-    st.subheader("📊 Piyasa Genel Bakış")
-    populer = ["GARAN", "AKBNK", "ISCTR", "YKBNK", "THYAO", "ASELS", "EREGL", "BIMAS", "SISE", "SASA"]
-    
-    with st.spinner("Veriler yükleniyor..."):
-        veriler = []
-        for hisse in populer:
-            skor, pot, rsi = tavan_kapasite_hesapla(hisse)
-            df = yf.download(hisse + ".IS", period="1mo", progress=False, auto_adjust=False)
-            
-            # HATANIN ÇÖZÜMÜ: safe_float kullanımı
-            hacim = safe_float(df['Volume'].iloc[-1]) if not df.empty else 0
-            
-            veriler.append({
-                "Hisse": hisse, "Skor": skor, 
-                "Tavan Pot. (%)": round(pot, 1), 
-                "RSI": round(rsi, 1),
-                "Hacim (M)": round(hacim / 1_000_000, 1)
-            })
-        
-        df_veri = pd.DataFrame(veriler).sort_values(by="Skor", ascending=False)
-        st.dataframe(df_veri, width='stretch', hide_index=True)
-
-# Tab 3: Profesyonel Analiz
-with tab3:
-    st.subheader("🧠 Sınırsız Analiz")
+    st.subheader("🧠 Profesyonel Analiz")
     secim = st.selectbox("Analiz Edilecek Hisse", ["GARAN", "AKBNK", "ISCTR", "YKBNK", "THYAO", "ASELS", "EREGL", "BIMAS", "SISE", "SASA"])
     
     if st.button("Derinlemesine Analiz Başlat"):
