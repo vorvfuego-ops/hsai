@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <title>Profesyonel AI Terminali</title>
+    <!-- TradingView Açık Kaynak Grafik Kütüphanesi -->
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        body { background-color: #131722; color: #d1d4dc; font-family: Arial, sans-serif; margin: 0; padding: 20px; }
+        h1 { font-size: 20px; }
+        #tavsiye { background: #2a2e39; padding: 15px; border-radius: 8px; margin-bottom: 20px; font-weight: bold; color: #4caf50; }
+        #chart { width: 100%; height: 600px; }
+    </style>
+</head>
+<body>
+    <h1>BTC/USDT Canlı Analiz Terminali</h1>
+    <div id="tavsiye">Yapay Zeka hesaplıyor...</div>
+    <div id="chart"></div>
+
+    <script>
+        // Grafiği Oluştur
+        const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+            width: 1200,
+            height: 600,
+            layout: { background: { color: '#131722' }, textColor: '#d1d4dc' },
+            grid: { vertLines: { color: '#1e222d' }, horzLines: { color: '#1e222d' } },
+        });
+        const candleSeries = chart.addCandlestickSeries();
+
+        // Python'dan (Flask) veri çek
+        fetch('/api/veri')
+            .then(response => response.json())
+            .then(data => {
+                candleSeries.setData(data);
+            });
+
+        // Yapay Zeka Tavsiyesini Çek
+        fetch('/api/tavsiye')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('tavsiye').innerText = "AI Motoru: " + data.tavsiye;
+            });
+    </script>
+</body>
+</html>
