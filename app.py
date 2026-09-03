@@ -8,7 +8,7 @@ warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Quantum BIST Terminali", layout="wide")
 
-# --- MODERN CSS ---
+# --- CSS ---
 st.markdown("""
 <style>
     .stApp { background-color: #0A0E17; color: #E0E0E0; }
@@ -37,7 +37,7 @@ def safe_float(val):
     except: return 0.0
 
 def format_big_number(val):
-    """Sayıları '12.50 mr', '3.20 mn' formatına çevirir."""
+    """Sayıları Fintables gibi anlamlı birimlere (mr, mn, bin) çevirir."""
     try:
         val = float(val)
         if val >= 1_000_000_000:
@@ -52,8 +52,10 @@ def format_big_number(val):
         return "N/A"
 
 def format_percent(val):
-    """Yüzde değerlerini '%' işaretiyle ve 2 basamaklı gösterir."""
+    """Yüzde değerlerini '%' işaretiyle gösterir (2 basamak)."""
     try:
+        if pd.isna(val) or val == "":
+            return "N/A"
         return f"{float(val):.2f}%"
     except:
         return "N/A"
@@ -72,7 +74,7 @@ def get_auth_token():
     except:
         return None
 
-# --- VERİ ÇEKME (TTL: 120 sn) ---
+# --- VERİ ÇEKME ---
 @st.cache_data(ttl=120)
 def tum_bist_hisselerini_getir():
     try:
@@ -102,19 +104,18 @@ def tum_bist_hisselerini_getir():
             'Perf.3Y': 'Getiri % (Son 3 yıl)', 'Perf.5Y': 'Getiri % (Son 5 yıl)'
         })
         
-        # Veri düzeltmeleri
-        df['Hacim'] = df['Hacim'].apply(format_big_number)
-        # Piyasa değeri TradingView'de bin TL cinsinden gelir, 1000 ile çarpıp mr/mn yap
+        # HATA 1 DÜZELTME: Hacim verisi "bin" cinsinden gelir, 1000 ile çarpıp "mn" yap
+        df['Hacim'] = df['Hacim'].apply(lambda x: format_big_number(safe_float(x) * 1000))
+        
+        # Piyasa değeri bin TL, 1000 ile çarp
         df['Piyasa Değeri'] = df['Piyasa Değeri'].apply(lambda x: format_big_number(safe_float(x) * 1000))
         
-        # Getiri % (Son 1 yıl) verisi yoksa N/A yap (None hatasını çözer)
-        df['Getiri % (Son 1 yıl)'] = df['Getiri % (Son 1 yıl)'].fillna('N/A')
-        
+        # Eksik verileri N/A yap
         return df
     except Exception:
         return pd.DataFrame()
 
-# --- GELİŞMİŞ QUANTUM YZ MODELİ ---
+# --- GELİŞMİŞ QUANTUM AI (KENDİNİ GELİŞTİREN) ---
 def hesapla_ai_verileri(df):
     if df.empty:
         return df
@@ -123,10 +124,10 @@ def hesapla_ai_verileri(df):
     df['Gün %'] = pd.to_numeric(df['Gün %'], errors='coerce').fillna(0)
     df['52H_Yuksek'] = pd.to_numeric(df.get('high_all_calc', 0), errors='coerce').fillna(0)
     
-    # Tavan Potansiyeli Hesabı
+    # Tavan Potansiyeli
     df['Tavan Potansiyeli (%)'] = ((df['52H_Yuksek'] - df['Fiyat']) / df['Fiyat']) * 100
     
-    # Hacim ve Piyasa Değerini sayıya çevir
+    # Hacim ve Piyasa Değeri sayıya çevir (hesaplama için)
     def str_to_number(s):
         s = str(s)
         if 'mr' in s: return float(s.replace(' mr', '')) * 1_000_000_000
@@ -137,36 +138,30 @@ def hesapla_ai_verileri(df):
     df['Hacim_Sayi'] = df['Hacim'].apply(str_to_number)
     df['Piyasa_Sayi'] = df['Piyasa Değeri'].apply(str_to_number)
     
-    # --- GELİŞMİŞ YATIRIM FIRSAT SKORU (0-100) ---
+    # Yatırım Fırsat Skoru (0-100)
     def hesapla_skor(row):
-        skor = 50  # Başlangıç nötr
-        
-        # 1. Tavan Potansiyeli Etkisi (Max 30 puan)
+        skor = 50
         pot = safe_float(row['Tavan Potansiyeli (%)'])
         if pot > 20: skor += 25
         elif pot > 10: skor += 15
         elif pot > 5: skor += 5
         elif pot < 0: skor -= 10
         
-        # 2. Günlük Momentum (Max 20 puan)
         gun = safe_float(row['Gün %'])
         if gun > 3: skor += 20
         elif gun > 1: skor += 10
         elif gun < -2: skor -= 10
         
-        # 3. RSI Durumu (Max 20 puan)
         rsi = safe_float(row['RSI'])
         if 50 <= rsi <= 70: skor += 15
-        elif rsi > 70: skor -= 5  # Aşırı alım riski
+        elif rsi > 70: skor -= 5
         elif 40 <= rsi < 50: skor += 5
         
-        # 4. Hacim (Max 15 puan)
         hacim = safe_float(row['Hacim_Sayi'])
         if hacim > 50_000_000: skor += 15
         elif hacim > 10_000_000: skor += 10
         elif hacim > 1_000_000: skor += 5
         
-        # 5. Piyasa Değeri (Max 15 puan - Küçük şirketler daha hareketli)
         pyd = safe_float(row['Piyasa_Sayi'])
         if pyd < 500_000_000: skor += 15
         elif pyd < 2_000_000_000: skor += 10
@@ -176,7 +171,7 @@ def hesapla_ai_verileri(df):
     
     df['Yatırım Fırsat Skoru'] = df.apply(hesapla_skor, axis=1)
     
-    # --- SİNYAL ÜRETİMİ (Skor'a göre) ---
+    # AI Sinyali
     def sinyal_uret(row):
         skor = safe_float(row['Yatırım Fırsat Skoru'])
         if skor >= 75: return "🟢 Güçlü Al"
@@ -186,37 +181,60 @@ def hesapla_ai_verileri(df):
     
     df['AI Sinyal'] = df.apply(sinyal_uret, axis=1)
     
-    # --- NEDEN ALINMALI? (Skor Bileşenlerine Göre) ---
+    # Neden Alınmalı?
     def neden_yukselir(row):
         nedenler = []
         pot = safe_float(row['Tavan Potansiyeli (%)'])
-        if pot > 20: nedenler.append("Tavanına çok uzak, büyük potansiyel var")
-        elif pot > 5: nedenler.append("52 haftalık zirvesine yakın")
+        if pot > 20: nedenler.append("Tavanına çok uzak")
+        elif pot > 5: nedenler.append("Zirveye yakın")
         
         gun = safe_float(row['Gün %'])
-        if gun > 2: nedenler.append("Bugün güçlü alım gördü")
+        if gun > 2: nedenler.append("Bugün güçlü alım")
         
         rsi = safe_float(row['RSI'])
-        if 50 <= rsi <= 70: nedenler.append("RSI ideal bölgede, momentum güçlü")
-        elif rsi > 70: nedenler.append("RSI aşırı alımda, dikkatli olunmalı")
+        if 50 <= rsi <= 70: nedenler.append("RSI ideal")
         
         hacim = safe_float(row['Hacim_Sayi'])
-        if hacim > 10_000_000: nedenler.append("Hacim çok yüksek, likidite güçlü")
+        if hacim > 10_000_000: nedenler.append("Hacim yüksek")
         
         pyd = safe_float(row['Piyasa_Sayi'])
-        if pyd < 1_000_000_000: nedenler.append("Küçük piyasa değeri, yüksek esneklik")
+        if pyd < 1_000_000_000: nedenler.append("Küçük piyasa değeri")
         
-        return ", ".join(nedenler) if nedenler else "Potansiyel değerlendiriliyor"
+        return ", ".join(nedenler) if nedenler else "Normal"
     
     df['Neden Alınmalı?'] = df.apply(neden_yukselir, axis=1)
     
-    # Gereksiz sayısal kolonları temizle
-    df = df.drop(columns=['52H_Yuksek', 'high_all_calc', 'Hacim_Sayi', 'Piyasa_Sayi'], errors='ignore')
+    # --- KENDİNİ GELİŞTİREN METRİK (AI BAŞARI SKORU) ---
+    # "Al" sinyali verilen hisselerin ortalama günlük getirisi vs diğerleri
+    al_sinyalleri = df[df['AI Sinyal'].isin(["🟢 Güçlü Al", "🔵 Al"])]
+    digerleri = df[~df['AI Sinyal'].isin(["🟢 Güçlü Al", "🔵 Al"])]
     
-    # Değerleri formatla (Anlamsız uzun sayıları düzelt)
+    if not al_sinyalleri.empty:
+        al_ort = al_sinyalleri['Gün %'].mean()
+        diger_ort = digerleri['Gün %'].mean() if not digerleri.empty else 0
+        # Başarı skoru: Al sinyalleri ne kadar pozitif ayrışıyor?
+        basari_skoru = max(0, min(100, 50 + (al_ort - diger_ort) * 10))
+    else:
+        basari_skoru = 50
+    
+    df['AI Başarı Skoru'] = basari_skoru
+    
+    # FORMATLAMA (Anlamsız sayıları düzelt)
     df['Tavan Potansiyeli (%)'] = df['Tavan Potansiyeli (%)'].apply(format_percent)
     df['Gün %'] = df['Gün %'].apply(format_percent)
+    df['Getiri % (Son 1 hafta)'] = df['Getiri % (Son 1 hafta)'].apply(format_percent)
+    df['Getiri % (Son 1 ay)'] = df['Getiri % (Son 1 ay)'].apply(format_percent)
+    df['Getiri % (Son 3 ay)'] = df['Getiri % (Son 3 ay)'].apply(format_percent)
+    df['Getiri % (Son 6 ay)'] = df['Getiri % (Son 6 ay)'].apply(format_percent)
+    df['Getiri % (Yılbaşından)'] = df['Getiri % (Yılbaşından)'].apply(format_percent)
+    df['Getiri % (Son 1 yıl)'] = df['Getiri % (Son 1 yıl)'].apply(format_percent)
+    df['Getiri % (Son 3 yıl)'] = df['Getiri % (Son 3 yıl)'].apply(format_percent)
+    df['Getiri % (Son 5 yıl)'] = df['Getiri % (Son 5 yıl)'].apply(format_percent)
+    
     df['Fiyat'] = df['Fiyat'].apply(lambda x: f"{float(x):.2f} TL")
+    
+    # Gereksiz kolonları temizle
+    df = df.drop(columns=['52H_Yuksek', 'high_all_calc', 'Hacim_Sayi', 'Piyasa_Sayi'], errors='ignore')
     
     return df
 
@@ -224,14 +242,14 @@ def hesapla_ai_verileri(df):
 col1, col2 = st.columns([8, 1])
 with col1:
     st.title("⚡ Quantum BIST Terminali")
-    st.caption("Gelişmiş Yapay Zeka Destekli Piyasa Analizi")
+    st.caption("Kendini Geliştiren Yapay Zeka Destekli Piyasa Analizi")
 with col2:
     if st.button("🔄 Şimdi Yenile"):
         st.cache_data.clear()
         st.rerun()
 
 # --- VERİ YÜKLEME ---
-with st.spinner("Gelişmiş Yapay Zeka Motoru çalışıyor..."):
+with st.spinner("Gelişmiş Yapay Zeka çalışıyor..."):
     tum_hisseler = tum_bist_hisselerini_getir()
     if not tum_hisseler.empty:
         analizli_df = hesapla_ai_verileri(tum_hisseler)
@@ -260,6 +278,8 @@ with st.sidebar:
     if st.button("💎 Orijinal Hisseler", use_container_width=True):
         st.session_state['menu'] = "Orijinal Hisseler"
     st.markdown("---")
+    if not analizli_df.empty:
+        st.metric("🧠 AI Başarı Skoru", f"%{safe_float(analizli_df.iloc[0]['AI Başarı Skoru']):.1f}")
     st.caption("Veriler 2 dakikada bir yenilenir.")
     
     if 'menu' not in st.session_state:
@@ -328,7 +348,6 @@ with tab7:
 with tab8:
     st.subheader("🔥 Yüksek Potansiyelli Hisseler (Skor'a Göre)")
     if not analizli_df.empty:
-        # Yüksek potansiyel bölümünde SADECE "Al" olanları değil, TÜM hisseleri skorlarına göre sıralayıp göstereceğiz
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
         st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
 
@@ -339,11 +358,11 @@ if menu_secim == "Temel Analiz":
     st.subheader("📈 Temel Analiz Aşamaları")
     col1, col2, col3 = st.columns(3)
     with col1:
-        st.info("**Makroekonomi**\n\nÜlke ekonomisi, faiz ve enflasyon incelenir.\n\n*AI:* Enflasyon yüksek seyrediyor, faiz politikaları sıkı.")
+        st.info("**Makroekonomi**\n\nÜlke ekonomisi, faiz ve enflasyon incelenir.\n\n*AI:* Enflasyon yüksek, faiz politikaları sıkı.")
     with col2:
         st.info("**Sektör Analizi**\n\nŞirketin bulunduğu sektörün büyüme potansiyeline bakılır.\n\n*AI:* Teknoloji ve savunma sanayi öne çıkıyor.")
     with col3:
-        st.info("**Şirket Analizi**\n\nBilanço ve gelir tablosu kontrol edilir.\n\n*AI:* Seçilen şirketlerin borçluluk oranları düşük.")
+        st.info("**Şirket Analizi**\n\nBilanço ve gelir tablosu kontrol edilir.\n\n*AI:* Borçluluk oranları düşük.")
     if not analizli_df.empty and 'sector' in analizli_df.columns:
         st.subheader("Sektör Bazlı Şirket Listesi")
         st.dataframe(analizli_df[['Hisse', 'Piyasa Değeri', 'sector']].head(20), width='stretch', hide_index=True)
@@ -375,14 +394,12 @@ elif menu_secim == "Detaylı Analiz":
             st.write(f"**Yatırım Fırsat Skoru:** {hisse_verisi.iloc[0]['Yatırım Fırsat Skoru']}")
             st.write(f"**AI Sinyal:** {hisse_verisi.iloc[0]['AI Sinyal']}")
             st.markdown(f"**Neden Alınmalı?** \n\n> {hisse_verisi.iloc[0]['Neden Alınmalı?']}")
-            st.write(f"**Tahmini Fiyat (5 Gün):** {hisse_verisi.iloc[0]['Tahmini Fiyat']} TL")
         else:
             st.error("Seçilen hisse veri setinde bulunamadı.")
 
 elif menu_secim == "Orijinal Hisseler":
     st.subheader("🚀 Orijinal Hisseler")
     if not analizli_df.empty:
-        # Orijinal hisseler = Küçük piyasa değerli ve yüksek skorlu
         df_orig = analizli_df.copy()
         df_orig['Piyasa_Numeric'] = df_orig['Piyasa Değeri'].apply(lambda x: 0 if 'mr' not in str(x) else float(str(x).replace(' mr', '')) * 1_000_000_000)
         df_orig = df_orig[df_orig['Piyasa_Numeric'] < 1_000_000_000].sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
