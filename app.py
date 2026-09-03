@@ -46,9 +46,13 @@ def send_telegram_alert(message):
         chat_id = st.secrets["telegram"]["chat_id"]
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
-        requests.post(url, json=payload, timeout=5)
-    except:
-        pass
+        response = requests.post(url, json=payload, timeout=5)
+        # Hata ayıklama için yanıtı kontrol et
+        if response.status_code != 200:
+            st.warning(f"Telegram Hatası: {response.text}")
+    except Exception as e:
+        st.error(f"Telegram Ayarları Hatalı: {e}")
+        st.info("Lütfen secrets.toml dosyanızda [telegram] bölümünü ve bot_token / chat_id değerlerini kontrol edin.")
 
 # --- MAKRO VERİ ---
 def get_macro_data():
@@ -142,7 +146,6 @@ def hesapla_ai_verileri(df):
     df['Fiyat'] = pd.to_numeric(df['Fiyat'], errors='coerce').fillna(0)
     df['Tavan Potansiyeli (%)'] = np.where(df['Fiyat'] > 0, ((df['52H_Yuksek'] - df['Fiyat']) / df['Fiyat']) * 100, 0)
     
-    # Eksik getiri tahminleri
     def ai_tahmin_1y(row):
         val = row.get('Getiri % (Son 1 yıl)')
         if pd.isna(val) or val == "":
@@ -150,7 +153,6 @@ def hesapla_ai_verileri(df):
             try: return safe_float(val_6m) * 2
             except: return None
         return val
-    # (3y ve 5y tahmin fonksiyonları aynı mantıkla korundu)
     def ai_tahmin_3y(row):
         val = row.get('Getiri % (Son 3 yıl)')
         if pd.isna(val) or val == "":
@@ -170,7 +172,6 @@ def hesapla_ai_verileri(df):
     df['Getiri % (Son 3 yıl)'] = df.apply(ai_tahmin_3y, axis=1)
     df['Getiri % (Son 5 yıl)'] = df.apply(ai_tahmin_5y, axis=1)
     
-    # --- SEKTÖREL DEĞERLEME (Hata Düzeltildi) ---
     def sektorel_degerleme(row):
         sektor = str(row.get('Sektör', '') or '')
         fk = safe_float(row.get('F/K'))
@@ -193,8 +194,7 @@ def hesapla_ai_verileri(df):
     
     df['Sektörel Değerleme'] = df.apply(sektorel_degerleme, axis=1)
     
-    # --- 1. MARKOV ZİNCİRİ: PİYASA REJİMİ ALGILAMA ---
-    # Tüm piyasanın ortalama 1 aylık getirisine bakarak rejim belirlenir.
+    # Markov Rejimi
     ort_getiri_1m = pd.to_numeric(df['Getiri % (Son 1 ay)'].astype(str).str.replace('%', ''), errors='coerce').mean()
     if ort_getiri_1m > 3:
         rejim = "BOĞA"
@@ -206,41 +206,31 @@ def hesapla_ai_verileri(df):
         rejim = "YATAY"
         rejim_bonus = 0
 
-    # --- 2. BACKTESTING (ADAPTİF ÖĞRENME) ---
-    # Geçmiş verilerle kuralın (F/K < 10) ne kadar isabetli olduğunu hesapla
+    # Backtesting
     ucuz_hisseler = df[df['Sektörel Değerleme'].isin(["Çok Ucuz", "Ucuz"])]
     diger_hisseler = df[~df['Sektörel Değerleme'].isin(["Çok Ucuz", "Ucuz"])]
     
     if not ucuz_hisseler.empty and not diger_hisseler.empty:
         ucuz_ort_6m = pd.to_numeric(ucuz_hisseler['Getiri % (Son 6 ay)'].astype(str).str.replace('%', ''), errors='coerce').mean()
         diger_ort_6m = pd.to_numeric(diger_hisseler['Getiri % (Son 6 ay)'].astype(str).str.replace('%', ''), errors='coerce').mean()
-        # Backtest katsayısı: Ucuz hisseler ne kadar daha iyi performans gösterdi?
         backtest_farki = ucuz_ort_6m - diger_ort_6m
-        # Bu farkı 0-20 arası bir puana çevir
         backtest_skoru = max(-10, min(10, backtest_farki / 5))
     else:
         backtest_skoru = 0
 
-    # --- 3. MONTE CARLO SİMÜLASYONU (Olasılıksal Tahmin) ---
+    # Monte Carlo Simülasyonu
     def monte_carlo_olasilik(row):
         fiyat = safe_float(row['Fiyat'])
         gunluk_degisim = abs(safe_float(row['Gün %'])) / 100
-        volatilite = max(gunluk_degisim, 0.01)  # Günlük % değişim volatilite olarak alınır
-        sims = np.random.normal(fiyat, volatilite * fiyat, 10000) # 10.000 senaryo
-        
-        # 5 gün sonraki fiyatın %10 artma ihtimali (basit Brownian hareketi)
+        volatilite = max(gunluk_degisim, 0.01)
         fiyat_5_gun = fiyat * np.exp((0 * 5) + (volatilite * np.sqrt(5) * np.random.randn(10000)))
         olasilik = np.mean(fiyat_5_gun >= fiyat * 1.10) * 100
-        
         return olasilik
 
     df['Monte Carlo Olasılığı (%)'] = df.apply(monte_carlo_olasilik, axis=1)
 
-    # --- 4. YENİ SKORLAMA (Quantum Düzeyi) ---
     def hesapla_skor(row):
         skor = 50
-        
-        # Temel Kurallar (0-30 arası etki)
         pot = safe_float(row['Tavan Potansiyeli (%)'])
         if pot > 20: skor += 15
         elif pot > 10: skor += 8
@@ -256,13 +246,11 @@ def hesapla_ai_verileri(df):
         if 50 <= rsi <= 70: skor += 8
         elif rsi > 70: skor -= 5
         
-        # Monte Carlo Etkisi (0-40 puan arası - En büyük etki)
         mc_olasilik = safe_float(row['Monte Carlo Olasılığı (%)'])
-        skor += (mc_olasilik / 2.5)  # Örn: %25 olasılık = +10 puan
+        skor += (mc_olasilik / 2.5)
 
-        # Backtesting ve Rejim Etkisi (0-30 puan arası)
-        skor += backtest_skoru  # -10 ile +10 arası
-        skor += rejim_bonus    # -10 ile +10 arası
+        skor += backtest_skoru
+        skor += rejim_bonus
         
         return max(0, min(100, skor))
     
@@ -296,7 +284,6 @@ def hesapla_ai_verileri(df):
     
     df['Neden Alınmalı?'] = df.apply(neden_yukselir, axis=1)
     
-    # Formatlama
     df['Tavan Potansiyeli (%)'] = df['Tavan Potansiyeli (%)'].apply(format_percent)
     df['Gün %'] = df['Gün %'].apply(format_percent)
     df['Monte Carlo Olasılığı (%)'] = df['Monte Carlo Olasılığı (%)'].round(2).apply(lambda x: f"%{x}")
@@ -311,17 +298,25 @@ def hesapla_ai_verileri(df):
     return df
 
 # --- VERİ YÜKLEME ---
-with st.spinner("Quantum YZ (Monte Carlo + Markov + Backtest) çalışıyor..."):
+with st.spinner("Quantum YZ çalışıyor..."):
     tum_hisseler_raw = tum_bist_hisselerini_getir()
     if not tum_hisseler_raw.empty:
         analizli_df = hesapla_ai_verileri(tum_hisseler_raw)
     else:
         analizli_df = pd.DataFrame()
 
-# --- TELEGRAM BİLDİRİM KONTROLÜ (Yüksek Potansiyel) ---
+# --- MANUEL TEST VE TELEGRAM BİLDİRİM KONTROLÜ ---
 if not analizli_df.empty:
-    # Hem skor 80+ hem de Monte Carlo olasılığı %20+ olanları bildir
-    bildirim_listesi = analizli_df[(analizli_df['Yatırım Fırsat Skoru'] >= 80) & (analizli_df['Monte Carlo Olasılığı (%)'].astype(str).str.replace('%', '').astype(float) > 20)]
+    # TEST BUTONU (Yeni Eklenen Bölüm)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔔 Telegram Testi")
+    if st.sidebar.button("Test Bildirimi Gönder", key="telegram_test_btn"):
+        test_mesaji = "✅ <b>Test Bildirimi Başarılı!</b>\n\nQuantum BIST Terminali çalışıyor ve Telegram bağlantısı aktif."
+        send_telegram_alert(test_mesaji)
+        st.sidebar.success("Test mesajı gönderilmeye çalışıldı. Telegram'ı kontrol edin.")
+
+    # Otomatik Bildirim (Eşikler Test için düşürüldü: Skor >= 70 ve Olasılık > 10)
+    bildirim_listesi = analizli_df[(analizli_df['Yatırım Fırsat Skoru'] >= 70) & (analizli_df['Monte Carlo Olasılığı (%)'].astype(str).str.replace('%', '').astype(float) > 10)]
     
     if 'bildirilen_hisseler' not in st.session_state:
         st.session_state['bildirilen_hisseler'] = []
@@ -329,11 +324,10 @@ if not analizli_df.empty:
     for _, row in bildirim_listesi.iterrows():
         hisse = row['Hisse']
         if hisse not in st.session_state['bildirilen_hisseler']:
-            mesaj = f"🚀 <b>Kuantum Alarm!</b>\n\n"
+            mesaj = f"🚀 <b>Kuantum Alarmı!</b>\n\n"
             mesaj += f"📈 Hisse: <b>{hisse}</b>\n"
             mesaj += f"💰 Fiyat: {row['Fiyat']}\n"
             mesaj += f"📊 Skor: <b>{row['Yatırım Fırsat Skoru']}</b>\n"
-            mesaj += f"⚡ Sinyal: {row['AI Sinyal']}\n"
             mesaj += f"🎲 5 Günlük %10 Olasılığı: {row['Monte Carlo Olasılığı (%)']}\n"
             mesaj += f"💡 Neden: {row['Neden Alınmalı?']}"
             
@@ -377,7 +371,6 @@ with tab1:
     else:
         st.error("Veri yüklenemedi.")
 
-# (Diğer sekmeler Tab2-Tab8 aynen korunduğu için kodun devamı önceki halindedir)
 with tab2:
     st.subheader("💎 Değerleme")
     if not analizli_df.empty:
@@ -413,7 +406,7 @@ with tab8:
     if not analizli_df.empty:
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
         st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Monte Carlo Olasılığı (%)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
-        st.success("Skoru 80+ ve Monte Carlo olasılığı %20+ olan hisseler Telegram'ınıza otomatik bildirilir.")
+        st.success("Skoru 70+ ve Monte Carlo olasılığı %10+ olan hisseler Telegram'ınıza otomatik bildirilir.")
 
 # --- SOL MENÜ MODÜLLERİ ---
 st.markdown("---")
@@ -422,7 +415,6 @@ if menu_secim == "Temel Analiz":
     st.subheader("📈 Profesyonel Temel Analiz")
     macro = get_macro_data()
     st.write(f"**Enflasyon:** %{macro['enflasyon']} | **Faiz:** %{macro['faiz']} | **Büyüme:** %{macro['buyume']} | **CDS:** {macro['cds']}")
-    # (Temel Analiz içeriği aynı korundu)
     if not analizli_df.empty:
         ort_fk = pd.to_numeric(analizli_df['F/K'], errors='coerce').mean()
         st.markdown("### 🎯 2026 Senaryo Analizi")
