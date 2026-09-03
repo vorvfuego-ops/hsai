@@ -6,6 +6,7 @@ import warnings
 from streamlit_autorefresh import st_autorefresh
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from datetime import datetime  # Piyasa saati için eklendi
 
 warnings.filterwarnings("ignore")
 
@@ -47,12 +48,10 @@ def send_telegram_alert(message):
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {"chat_id": chat_id, "text": message, "parse_mode": "HTML"}
         response = requests.post(url, json=payload, timeout=5)
-        # Hata ayıklama için yanıtı kontrol et
         if response.status_code != 200:
             st.warning(f"Telegram Hatası: {response.text}")
     except Exception as e:
         st.error(f"Telegram Ayarları Hatalı: {e}")
-        st.info("Lütfen secrets.toml dosyanızda [telegram] bölümünü ve bot_token / chat_id değerlerini kontrol edin.")
 
 # --- MAKRO VERİ ---
 def get_macro_data():
@@ -218,11 +217,17 @@ def hesapla_ai_verileri(df):
     else:
         backtest_skoru = 0
 
-    # Monte Carlo Simülasyonu
+    # Monte Carlo Simülasyonu (Deterministik Seed Eklendi)
     def monte_carlo_olasilik(row):
         fiyat = safe_float(row['Fiyat'])
         gunluk_degisim = abs(safe_float(row['Gün %'])) / 100
         volatilite = max(gunluk_degisim, 0.01)
+        
+        # Aynı gün içinde hisse bazlı tutarlı skor üretmek için seed kullan
+        hisse = row['Hisse']
+        bugun = datetime.now().date()
+        np.random.seed(f"{hisse}-{bugun}")
+        
         fiyat_5_gun = fiyat * np.exp((0 * 5) + (volatilite * np.sqrt(5) * np.random.randn(10000)))
         olasilik = np.mean(fiyat_5_gun >= fiyat * 1.10) * 100
         return olasilik
@@ -254,7 +259,7 @@ def hesapla_ai_verileri(df):
         
         return max(0, min(100, skor))
     
-    df['Yatırım Fırsat Skoru'] = df.apply(hesapla_skor, axis=1)
+    df['Yatırım Fırsat Skoru'] = df.apply(hesapla_skor, axis=1).round(1) # Yuvarlama eklendi
     
     def sinyal_uret(row):
         skor = safe_float(row['Yatırım Fırsat Skoru'])
@@ -305,34 +310,42 @@ with st.spinner("Quantum YZ çalışıyor..."):
     else:
         analizli_df = pd.DataFrame()
 
-# --- MANUEL TEST VE TELEGRAM BİLDİRİM KONTROLÜ ---
+# --- PİYASA SAATİ KONTROLÜ VE TELEGRAM BİLDİRİMİ ---
 if not analizli_df.empty:
-    # TEST BUTONU (Yeni Eklenen Bölüm)
+    # Piyasa Açık mı? (Hafta içi 09:00 - 18:00)
+    now = datetime.now()
+    piyasa_acik = (now.weekday() < 5) and (now.hour >= 9 and now.hour < 18)
+    
+    # Günlük Sıfırlama Kontrolü
+    if 'bildirilen_tarih' not in st.session_state or st.session_state['bildirilen_tarih'] != str(now.date()):
+        st.session_state['bildirilen_hisseler'] = []
+        st.session_state['bildirilen_tarih'] = str(now.date())
+
+    # TEST BUTONU (Heryerde çalışır)
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔔 Telegram Testi")
     if st.sidebar.button("Test Bildirimi Gönder", key="telegram_test_btn"):
         test_mesaji = "✅ <b>Test Bildirimi Başarılı!</b>\n\nQuantum BIST Terminali çalışıyor ve Telegram bağlantısı aktif."
         send_telegram_alert(test_mesaji)
-        st.sidebar.success("Test mesajı gönderilmeye çalışıldı. Telegram'ı kontrol edin.")
+        st.sidebar.success("Test mesajı gönderildi. Telegram'ı kontrol edin.")
 
-    # Otomatik Bildirim (Eşikler Test için düşürüldü: Skor >= 70 ve Olasılık > 10)
-    bildirim_listesi = analizli_df[(analizli_df['Yatırım Fırsat Skoru'] >= 70) & (analizli_df['Monte Carlo Olasılığı (%)'].astype(str).str.replace('%', '').astype(float) > 10)]
-    
-    if 'bildirilen_hisseler' not in st.session_state:
-        st.session_state['bildirilen_hisseler'] = []
-    
-    for _, row in bildirim_listesi.iterrows():
-        hisse = row['Hisse']
-        if hisse not in st.session_state['bildirilen_hisseler']:
-            mesaj = f"🚀 <b>Kuantum Alarmı!</b>\n\n"
-            mesaj += f"📈 Hisse: <b>{hisse}</b>\n"
-            mesaj += f"💰 Fiyat: {row['Fiyat']}\n"
-            mesaj += f"📊 Skor: <b>{row['Yatırım Fırsat Skoru']}</b>\n"
-            mesaj += f"🎲 5 Günlük %10 Olasılığı: {row['Monte Carlo Olasılığı (%)']}\n"
-            mesaj += f"💡 Neden: {row['Neden Alınmalı?']}"
-            
-            send_telegram_alert(mesaj)
-            st.session_state['bildirilen_hisseler'].append(hisse)
+    # Otomatik Bildirim (Sadece piyasa açıkken, eşik 75 ve %15)
+    if piyasa_acik:
+        bildirim_listesi = analizli_df[(analizli_df['Yatırım Fırsat Skoru'] >= 75) & (analizli_df['Monte Carlo Olasılığı (%)'].astype(str).str.replace('%', '').astype(float) > 15)]
+        
+        for _, row in bildirim_listesi.iterrows():
+            hisse = row['Hisse']
+            if hisse not in st.session_state['bildirilen_hisseler']:
+                # Mesaj formatı iyileştirildi
+                mesaj = f"🚀 <b>Kuantum Alarmı!</b>\n\n"
+                mesaj += f"📈 Hisse: <b>{hisse}</b>\n"
+                mesaj += f"💰 Fiyat: {row['Fiyat']}\n"
+                mesaj += f"📊 Skor: <b>{row['Yatırım Fırsat Skoru']}</b>\n"
+                mesaj += f"🎲 5 Günlük %10 Olasılığı: {row['Monte Carlo Olasılığı (%)']}\n"
+                mesaj += f"💡 Neden: {row['Neden Alınmalı?']}"
+                
+                send_telegram_alert(mesaj)
+                st.session_state['bildirilen_hisseler'].append(hisse)
 
 # --- SOL MENÜ VE DİĞER SEKMELER (Aynen Korundu) ---
 with st.sidebar:
@@ -406,7 +419,7 @@ with tab8:
     if not analizli_df.empty:
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
         st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Monte Carlo Olasılığı (%)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
-        st.success("Skoru 70+ ve Monte Carlo olasılığı %10+ olan hisseler Telegram'ınıza otomatik bildirilir.")
+        st.success("Piyasa açıkken skoru 75+ ve olasılığı %15+ olan hisseler otomatik bildirilir.")
 
 # --- SOL MENÜ MODÜLLERİ ---
 st.markdown("---")
