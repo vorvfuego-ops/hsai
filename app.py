@@ -42,7 +42,7 @@ def get_auth_token():
     except:
         return None
 
-# --- VERİ ÇEKME (HACİM DOĞRU HESAPLANIYOR) ---
+# --- VERİ ÇEKME (HACİM DOĞRU HESAPLANIYOR + SEKTÖR EKLENDİ) ---
 @st.cache_data(ttl=60)
 def tum_bist_hisselerini_getir():
     url = "https://scanner.tradingview.com/turkey/scan"
@@ -52,7 +52,7 @@ def tum_bist_hisselerini_getir():
             "name", "close", "change", "volume", "market_cap_basic", 
             "high_all_calc", "RSI", 
             "Perf.W", "Perf.1M", "Perf.3M", "Perf.6M", "Perf.YTD", 
-            "Perf.1Y", "Perf.3Y", "Perf.5Y"
+            "Perf.1Y", "Perf.3Y", "Perf.5Y", "sector"  # Sektör eklendi
         ]
     }
     
@@ -73,7 +73,7 @@ def tum_bist_hisselerini_getir():
                 "Hisse": d[0],
                 "Fiyat": d[1],
                 "Gün %": d[2],
-                "Hacim (Adet)": d[3],  # Adet cinsinden
+                "Hacim (Adet)": d[3],
                 "Piyasa Değeri (Bin TL)": d[4],
                 "52H_Yuksek": d[5],
                 "RSI": d[6],
@@ -84,14 +84,15 @@ def tum_bist_hisselerini_getir():
                 "Getiri % (Yılbaşından)": d[11],
                 "Getiri % (Son 1 yıl)": d[12],
                 "Getiri % (Son 3 yıl)": d[13],
-                "Getiri % (Son 5 yıl)": d[14]
+                "Getiri % (Son 5 yıl)": d[14],
+                "Sektör": d[15]  # Sektör verisi
             })
         
         df = pd.DataFrame(rows)
         if df.empty:
             return pd.DataFrame()
         
-        # DOĞRU HACİM: Adet * Fiyat = TL Hacim (Örn: 22.59M * 49.44 = 1.11 mr)
+        # DOĞRU HACİM: Adet * Fiyat = TL Hacim
         df['Hacim'] = (pd.to_numeric(df['Hacim (Adet)'], errors='coerce') * pd.to_numeric(df['Fiyat'], errors='coerce')).apply(format_big_number)
         
         # DOĞRU PİYASA DEĞERİ: Bin TL * 1000 = TL
@@ -101,6 +102,7 @@ def tum_bist_hisselerini_getir():
         df['Fiyat'] = pd.to_numeric(df['Fiyat'], errors='coerce')
         df['Gün %'] = pd.to_numeric(df['Gün %'], errors='coerce')
         df['RSI'] = pd.to_numeric(df['RSI'], errors='coerce')
+        df['Sektör'] = df['Sektör'].astype(str)
         return df
     except Exception as e:
         st.error(f"TradingView verileri alınamadı: {e}")
@@ -262,7 +264,7 @@ with tab1:
     else:
         st.error("Veri yüklenemedi.")
 
-# Diğer sekmeler
+# Diğer sekmeler (Aynen korundu)
 with tab2:
     st.subheader("💎 Değerleme")
     if not analizli_df.empty:
@@ -299,7 +301,7 @@ with tab8:
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
         st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
 
-# --- SOL MENÜ MODÜLLERİ (Temel Analiz GERİ EKLENDİ) ---
+# --- SOL MENÜ MODÜLLERİ ---
 st.markdown("---")
 
 if menu_secim == "Temel Analiz":
@@ -313,9 +315,35 @@ if menu_secim == "Temel Analiz":
     with col3:
         st.info("**Şirket Analizi**\n\nBilanço ve gelir tablosu kontrol edilir.\n\n*AI:* Borçluluk oranları düşük.")
     
-    if not analizli_df.empty and 'sector' in analizli_df.columns:
-        st.subheader("Sektör Bazlı Şirket Listesi")
-        st.dataframe(analizli_df[['Hisse', 'Piyasa Değeri', 'sector']].head(20), width='stretch', hide_index=True)
+    # --- YENİ: SEKTÖREL ANALİZ (Sektör verisi artık çekiliyor) ---
+    if not analizli_df.empty and 'Sektör' in analizli_df.columns:
+        st.subheader("📊 Sektör Bazlı Ortalama Getiri")
+        
+        # Sektörlere göre gruplama ve ortalama getiri hesaplama
+        sektor_df = analizli_df.copy()
+        # Getiri yüzdelerini sayıya çevir (formatlı oldukları için)
+        for col in ['Gün %', 'Getiri % (Son 1 hafta)', 'Getiri % (Son 1 ay)', 'Getiri % (Son 1 yıl)']:
+            if col in sektor_df.columns:
+                sektor_df[col] = pd.to_numeric(sektor_df[col].astype(str).str.replace('%', ''), errors='coerce')
+        
+        # Ortalama getirileri hesapla
+        sektor_ozet = sektor_df.groupby('Sektör').agg({
+            'Hisse': 'count',
+            'Gün %': 'mean',
+            'Getiri % (Son 1 hafta)': 'mean',
+            'Getiri % (Son 1 ay)': 'mean',
+            'Getiri % (Son 1 yıl)': 'mean'
+        }).rename(columns={'Hisse': 'Hisse Sayısı'})
+        
+        # Formatlama
+        for col in ['Gün %', 'Getiri % (Son 1 hafta)', 'Getiri % (Son 1 ay)', 'Getiri % (Son 1 yıl)']:
+            if col in sektor_ozet.columns:
+                sektor_ozet[col] = sektor_ozet[col].round(2).apply(lambda x: f"%{x}")
+        
+        st.dataframe(sektor_ozet, width='stretch', hide_index=True)
+        
+        st.subheader("🏭 Sektörlere Göre Hisse Dağılımı")
+        st.dataframe(sektor_df[['Hisse', 'Sektör', 'Fiyat', 'Gün %']].sort_values(by='Sektör'), width='stretch', hide_index=True)
 
 elif menu_secim == "Detaylı Analiz":
     st.subheader("🔬 Detaylı Analiz")
