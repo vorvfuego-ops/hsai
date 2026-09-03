@@ -61,7 +61,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- YARDIMCI FONKSİYONLAR ---
+# --- Yardımcı Fonksiyonlar (DÜZELTİLDİ) ---
 def safe_float(val):
     if val is None: return 0.0
     if isinstance(val, pd.Series):
@@ -83,6 +83,17 @@ def format_big_number(val):
             return f"{val / 1_000:.2f} bin"
         else:
             return f"{val:.0f}"
+    except:
+        return "N/A"
+
+def format_market_cap(val):
+    """TradingView'den gelen 'bin TL' cinsindeki Piyasa Değerini 'mr/mn' cinsine çevirir."""
+    try:
+        val = float(val)
+        # TradingView market_cap_basic değerini Bin TL cinsinden gönderir.
+        # Gerçek TL değerini elde etmek için 1000 ile çarpıyoruz.
+        val = val * 1000
+        return format_big_number(val)
     except:
         return "N/A"
 
@@ -129,9 +140,9 @@ def tum_bist_hisselerini_getir():
             'Perf.3Y': 'Getiri % (Son 3 yıl)', 'Perf.5Y': 'Getiri % (Son 5 yıl)'
         })
         
-        # Hacmi ve Piyasa Değerini formatla (mr, mn, bin)
+        # HATA DÜZELTME: Hacim ve Piyasa Değeri doğru formatlarda gösteriliyor
         df['Hacim'] = df['Hacim'].apply(format_big_number)
-        df['Piyasa Değeri'] = df['Piyasa Değeri'].apply(format_big_number)
+        df['Piyasa Değeri'] = df['Piyasa Değeri'].apply(format_market_cap)
         
         return df
     except Exception:
@@ -160,8 +171,17 @@ def hesapla_ai_verileri(df):
         gün = safe_float(row.get('Gün %'))
         if gün > 2: nedenler.append("Bugün güçlü alım var")
         
-        hacim = safe_float(row.get('Hacim'))
-        if hacim > 1000000: nedenler.append("İşlem hacmi çok yüksek (likidite güçlü)")
+        # Hacim verisi artık formatlı (metin) geldiği için sayıya çevirip kontrol et
+        hacim_str = str(row.get('Hacim', '0'))
+        hacim_numeric = 0
+        if 'mn' in hacim_str:
+            hacim_numeric = float(hacim_str.replace(' mn', '')) * 1_000_000
+        elif 'mr' in hacim_str:
+            hacim_numeric = float(hacim_str.replace(' mr', '')) * 1_000_000_000
+        elif 'bin' in hacim_str:
+            hacim_numeric = float(hacim_str.replace(' bin', '')) * 1_000
+        
+        if hacim_numeric > 1_000_000: nedenler.append("İşlem hacmi çok yüksek (likidite güçlü)")
         
         return ", ".join(nedenler) if nedenler else "Normal piyasa seyri"
 
@@ -196,12 +216,9 @@ def hesapla_ai_verileri(df):
     
     df = df.drop(columns=['52H_Yuksek', 'high_all_calc'], errors='ignore')
     
-    # Hacim ve Piyasa Değeri zaten biçimlendirildiği için sayısal işlemlerde kullanılmaz.
-    # Ancak tavan potansiyeli hesaplamasında 52H_Yuksek (sayısal) kullanılır, o yüzden bunu bıraktık.
-    
     return df
 
-# --- YENİLEME BUTONU ---
+# --- YENİLEME BUTONU (Otomatik 120sn + Manuel) ---
 col1, col2 = st.columns([8, 1])
 with col1:
     st.title("⚡ Quantum BIST Terminali")
@@ -260,9 +277,9 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📋 Bilanço", "💵 Gelir Tablosu", "💧 Nakit Akım", "🔥 Yüksek Potansiyel"
 ])
 
-# TAB 1: GETİRİ
+# TAB 1: GETİRİ (Alfabetik, Tüm Sütunlar)
 with tab1:
-    st.subheader("📊 Getiri Tablosu (Tüm Sütunlar)")
+    st.subheader("📊 Getiri Tablosu")
     if not analizli_df.empty:
         df_getiri = analizli_df.sort_values(by='Hisse', ascending=True)
         cols = ['Hisse', 'Fiyat', 'Gün %', 'Hacim', 
@@ -277,7 +294,7 @@ with tab1:
     else:
         st.error("Veri yüklenemedi.")
 
-# Diğer sekmeler (Değerleme, Karlılık vb. - Hacim ve Piyasa Değeri artık düzgün görünüyor)
+# Diğer sekmeler
 with tab2:
     st.subheader("💎 Değerleme")
     if not analizli_df.empty:
@@ -352,7 +369,6 @@ elif menu_secim == "Detaylı Analiz":
     
     if not analizli_df.empty:
         potansiyel_hisseler = analizli_df[analizli_df['AI Sinyal'].isin(["🟢 Güçlü Al", "🔵 Al"])].head(10)
-        
         if potansiyel_hisseler.empty:
             st.info("Şu an kesin alım sinyali veren hisse yok. Yine de en yüksek potansiyelli 10 hisseyi gösteriyorum.")
             potansiyel_hisseler = analizli_df.sort_values(by='Tavan Potansiyeli (%)', ascending=False).head(10)
@@ -386,10 +402,10 @@ elif menu_secim == "Detaylı Analiz":
 
 elif menu_secim == "Orijinal Hisseler":
     st.subheader("🚀 Orijinal Hisseler")
-    st.write("Endeks dışı, yüksek hacimli ve düşük piyasa değerli fırsatlar")
+    st.write("Endeks dışı, yüksek hacimli fırsatlar")
     if not analizli_df.empty:
-        # Hacim ve Piyasa Değeri artık metin olduğu için filtreleme yaparken sayıya çeviriyoruz
         df_orig = analizli_df.copy()
+        # Hacmi sayıya çevirerek filtrele
         df_orig['Hacim_Numeric'] = pd.to_numeric(df_orig['Hacim'].astype(str).str.replace(' mn', '000000').str.replace(' mr', '000000000').str.replace(' bin', '000'), errors='coerce').fillna(0)
         df_orig = df_orig[df_orig['Hacim_Numeric'] > 1000000].sort_values(by='Hacim_Numeric', ascending=False).head(20)
         st.dataframe(df_orig[['Hisse', 'Fiyat', 'Hacim', 'Piyasa Değeri', 'Gün %', 'AI Sinyal']], width='stretch', hide_index=True)
