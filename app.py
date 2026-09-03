@@ -3,10 +3,15 @@ import pandas as pd
 import numpy as np
 import requests
 import warnings
+from streamlit_autorefresh import st_autorefresh
 
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Quantum BIST Terminali", layout="wide")
+
+# --- OTOMATİK YENİLEME (60 Saniye) ---
+# Bu satır uygulamanın tamamını 60 saniyede bir otomatik yeniler.
+st_autorefresh(interval=60000, key="data_refresh")
 
 # --- CSS ---
 st.markdown("""
@@ -72,8 +77,8 @@ def get_auth_token():
     except:
         return None
 
-# --- VERİ ÇEKME (Hacim Hatası Düzeltildi) ---
-@st.cache_data(ttl=120)
+# --- VERİ ÇEKME ---
+@st.cache_data(ttl=60) # 60 saniyede bir verileri tazele
 def tum_bist_hisselerini_getir():
     try:
         from tradingview_screener import Query
@@ -102,18 +107,17 @@ def tum_bist_hisselerini_getir():
             'Perf.3Y': 'Getiri % (Son 3 yıl)', 'Perf.5Y': 'Getiri % (Son 5 yıl)'
         })
         
-        # DOĞRU HACİM HESAPLAMASI: Adet * Fiyat = TL Hacim (BIST standardı)
-        # TradingView volume'u 'adet' cinsinden verir. Fintables 'TL' cinsinden gösterir.
+        # Doğru Hacim Hesaplaması (Adet * Fiyat = TL)
         df['Hacim'] = (pd.to_numeric(df['Hacim'], errors='coerce') * pd.to_numeric(df['Fiyat'], errors='coerce')).apply(format_big_number)
         
-        # Piyasa değeri bin TL cinsinden gelir, 1000 ile çarpıp doğru formatla
+        # Piyasa değeri bin TL cinsinden gelir
         df['Piyasa Değeri'] = df['Piyasa Değeri'].apply(lambda x: format_big_number(safe_float(x) * 1000))
         
         return df
     except Exception:
         return pd.DataFrame()
 
-# --- GELİŞMİŞ YZ MODELİ (Eksik Verileri Tahminler) ---
+# --- GELİŞMİŞ YZ MODELİ ---
 def hesapla_ai_verileri(df):
     if df.empty:
         return df
@@ -122,49 +126,38 @@ def hesapla_ai_verileri(df):
     df['Gün %'] = pd.to_numeric(df['Gün %'], errors='coerce').fillna(0)
     df['52H_Yuksek'] = pd.to_numeric(df.get('high_all_calc', 0), errors='coerce').fillna(0)
     
-    # Tavan Potansiyeli
     df['Tavan Potansiyeli (%)'] = ((df['52H_Yuksek'] - df['Fiyat']) / df['Fiyat']) * 100
     
-    # YZ TAHMİN MODÜLÜ (Eksik Getirileri Hesaplar)
-    # Yapay zeka; 6 aylık veriden 1 yıllık, 1 yıllıktan 3 yıllık tahminler üretir.
+    # YZ Tahmin Modülü (Eksik verileri tamamlar)
     def ai_tahmin_1y(row):
-        # Eğer 1Y verisi yoksa veya NaN ise, 6M verisini 2 ile çarparak tahmin et
         val_1y = row.get('Getiri % (Son 1 yıl)')
         if pd.isna(val_1y) or val_1y == "N/A" or val_1y == "":
             val_6m = row.get('Getiri % (Son 6 ay)')
-            try:
-                return safe_float(val_6m) * 2  # Basit büyüme modeli
-            except:
-                return None
+            try: return safe_float(val_6m) * 2
+            except: return None
         return val_1y
 
     def ai_tahmin_3y(row):
         val_3y = row.get('Getiri % (Son 3 yıl)')
         if pd.isna(val_3y) or val_3y == "N/A" or val_3y == "":
             val_1y = row.get('Getiri % (Son 1 yıl)')
-            try:
-                # 1 yıl tahminini 3 ile çarparak 3 yıl tahmini üret
-                return safe_float(val_1y) * 3
-            except:
-                return None
+            try: return safe_float(val_1y) * 3
+            except: return None
         return val_3y
 
     def ai_tahmin_5y(row):
         val_5y = row.get('Getiri % (Son 5 yıl)')
         if pd.isna(val_5y) or val_5y == "N/A" or val_5y == "":
             val_3y = row.get('Getiri % (Son 3 yıl)')
-            try:
-                return safe_float(val_3y) * 1.6
-            except:
-                return None
+            try: return safe_float(val_3y) * 1.6
+            except: return None
         return val_5y
 
-    # Tahminleri uygula
     df['Getiri % (Son 1 yıl)'] = df.apply(ai_tahmin_1y, axis=1)
     df['Getiri % (Son 3 yıl)'] = df.apply(ai_tahmin_3y, axis=1)
     df['Getiri % (Son 5 yıl)'] = df.apply(ai_tahmin_5y, axis=1)
     
-    # Yatırım Fırsat Skoru (0-100)
+    # Yatırım Fırsat Skoru
     def hesapla_skor(row):
         skor = 50
         pot = safe_float(row['Tavan Potansiyeli (%)'])
@@ -172,28 +165,22 @@ def hesapla_ai_verileri(df):
         elif pot > 10: skor += 15
         elif pot > 5: skor += 5
         elif pot < 0: skor -= 10
-        
         gun = safe_float(row['Gün %'])
         if gun > 3: skor += 20
         elif gun > 1: skor += 10
         elif gun < -2: skor -= 10
-        
         rsi = safe_float(row['RSI'])
         if 50 <= rsi <= 70: skor += 15
         elif rsi > 70: skor -= 5
         elif 40 <= rsi < 50: skor += 5
-        
-        # YZ tahminlerinden skor üret
         y1 = safe_float(row.get('Getiri % (Son 1 yıl)'))
         if y1 > 20: skor += 15
         elif y1 > 10: skor += 10
         elif y1 < 0: skor -= 5
-        
         return max(0, min(100, skor))
     
     df['Yatırım Fırsat Skoru'] = df.apply(hesapla_skor, axis=1)
     
-    # AI Sinyali
     def sinyal_uret(row):
         skor = safe_float(row['Yatırım Fırsat Skoru'])
         if skor >= 75: return "🟢 Güçlü Al"
@@ -203,7 +190,6 @@ def hesapla_ai_verileri(df):
     
     df['AI Sinyal'] = df.apply(sinyal_uret, axis=1)
     
-    # Neden Alınmalı?
     def neden_yukselir(row):
         nedenler = []
         pot = safe_float(row['Tavan Potansiyeli (%)'])
@@ -219,7 +205,7 @@ def hesapla_ai_verileri(df):
     
     df['Neden Alınmalı?'] = df.apply(neden_yukselir, axis=1)
     
-    # FORMATLAMA
+    # Formatlama
     df['Tavan Potansiyeli (%)'] = df['Tavan Potansiyeli (%)'].apply(format_percent)
     df['Gün %'] = df['Gün %'].apply(format_percent)
     df['Getiri % (Son 1 hafta)'] = df['Getiri % (Son 1 hafta)'].apply(format_percent)
@@ -230,32 +216,21 @@ def hesapla_ai_verileri(df):
     df['Getiri % (Son 1 yıl)'] = df['Getiri % (Son 1 yıl)'].apply(format_percent)
     df['Getiri % (Son 3 yıl)'] = df['Getiri % (Son 3 yıl)'].apply(format_percent)
     df['Getiri % (Son 5 yıl)'] = df['Getiri % (Son 5 yıl)'].apply(format_percent)
-    
     df['Fiyat'] = df['Fiyat'].apply(lambda x: f"{float(x):.2f} TL")
     
     df = df.drop(columns=['52H_Yuksek', 'high_all_calc'], errors='ignore')
     
     return df
 
-# --- YENİLEME ---
-col1, col2 = st.columns([8, 1])
-with col1:
-    st.title("⚡ Quantum BIST Terminali")
-    st.caption("Kendini Geliştiren, Veri Tahminleyen Yapay Zeka")
-with col2:
-    if st.button("🔄 Şimdi Yenile"):
-        st.cache_data.clear()
-        st.rerun()
-
 # --- VERİ YÜKLEME ---
-with st.spinner("YZ, eksik verileri tahminliyor..."):
-    tum_hisseler = tum_bist_hisselerini_getir()
-    if not tum_hisseler.empty:
-        analizli_df = hesapla_ai_verileri(tum_hisseler)
+with st.spinner("YZ ve Veriler güncelleniyor..."):
+    tum_hisseler_raw = tum_bist_hisselerini_getir()
+    if not tum_hisseler_raw.empty:
+        analizli_df = hesapla_ai_verileri(tum_hisseler_raw)
     else:
         analizli_df = pd.DataFrame()
 
-# --- SOL MENÜ ---
+# --- SOL MENÜ (Gelişmiş Filtreleme Paneli) ---
 with st.sidebar:
     st.header("📋 Keşfet")
     if st.button("🔍 Radar", use_container_width=True):
@@ -269,6 +244,7 @@ with st.sidebar:
     if st.button("🪙 Kripto", use_container_width=True):
         st.session_state['menu'] = "Kripto"
     st.markdown("---")
+    
     st.header("🧠 Analiz")
     if st.button("📊 Temel Analiz", use_container_width=True):
         st.session_state['menu'] = "Temel Analiz"
@@ -276,32 +252,85 @@ with st.sidebar:
         st.session_state['menu'] = "Detaylı Analiz"
     if st.button("💎 Orijinal Hisseler", use_container_width=True):
         st.session_state['menu'] = "Orijinal Hisseler"
+        
     st.markdown("---")
+    
+    # --- FİLTRELEME PANELİ ---
+    st.header("🔎 Filtreler")
+    
     if not analizli_df.empty:
-        st.metric("🧠 AI Başarı Skoru", "%72.4")
-    st.caption("Veriler 2 dakikada bir yenilenir.")
+        # 1. Arama
+        arama = st.text_input("Hisse Ara", placeholder="Örn: THYAO")
+        
+        # 2. Kategori Seçimi (Popüler Filtreler)
+        kategori = st.selectbox("Kategori", ["Tümü", "Getiri %", "Fiyat", "Hacim", "AI Sinyali"])
+        
+        # 3. AI Sinyali Filtresi
+        secili_sinyaller = st.multiselect("AI Sinyali", ["🟢 Güçlü Al", "🔵 Al", "🟡 İzle", "⚪ Nötr"], default=["🟢 Güçlü Al", "🔵 Al"])
+        
+        # 4. Sayısal Aralık Filtreleri
+        fiyat_min, fiyat_max = st.slider("Fiyat Aralığı (TL)", 0.0, 1000.0, (0.0, 1000.0))
+        
+        # 5. Getiri % Filtresi (Örnek olarak 1 Ay)
+        getiri_min, getiri_max = st.slider("Getiri % (Son 1 Ay)", -100.0, 100.0, (-100.0, 100.0))
+        
+        # Filtreleri Uygula
+        df_filtre = analizli_df.copy()
+        
+        # Hisse Adına Göre Filtrele
+        if arama:
+            df_filtre = df_filtre[df_filtre['Hisse'].str.contains(arama.upper(), na=False)]
+        
+        # AI Sinyaline Göre Filtrele
+        if secili_sinyaller:
+            df_filtre = df_filtre[df_filtre['AI Sinyal'].isin(secili_sinyaller)]
+        
+        # Fiyata Göre Filtrele
+        df_filtre['Fiyat_Numeric'] = pd.to_numeric(df_filtre['Fiyat'].astype(str).str.replace(' TL', ''), errors='coerce')
+        df_filtre = df_filtre[(df_filtre['Fiyat_Numeric'] >= fiyat_min) & (df_filtre['Fiyat_Numeric'] <= fiyat_max)]
+        
+        # Getiriye Göre Filtrele (1 Ay)
+        df_filtre['Getiri_1A_Numeric'] = pd.to_numeric(df_filtre['Getiri % (Son 1 ay)'].astype(str).str.replace('%', ''), errors='coerce')
+        df_filtre = df_filtre[(df_filtre['Getiri_1A_Numeric'] >= getiri_min) & (df_filtre['Getiri_1A_Numeric'] <= getiri_max)]
+        
+        # Geçici kolonları temizle
+        df_filtre = df_filtre.drop(columns=['Fiyat_Numeric', 'Getiri_1A_Numeric'], errors='ignore')
+        
+        # Kaydetme Özelliği (Listeme Ekle)
+        if "kayitli_hisseler" not in st.session_state:
+            st.session_state["kayitli_hisseler"] = []
+            
+        secili_hisse_liste = st.multiselect("Listeye Eklenecek Hisseler", options=df_filtre['Hisse'].tolist())
+        if st.button("💾 Kaydet"):
+            st.session_state["kayitli_hisseler"].extend(secili_hisse_liste)
+            st.success("Hisseler kaydedildi!")
+            
+        if st.session_state["kayitli_hisseler"]:
+            st.write(f"**Kayıtlı Hisseler:** {', '.join(st.session_state['kayitli_hisseler'])}")
+            if st.button("Temizle"):
+                st.session_state["kayitli_hisseler"] = []
+                st.rerun()
+    else:
+        st.warning("Veri bekleniyor...")
+
+    st.markdown("---")
+    st.caption("Otomatik yenileme: 60 sn")
     
     if 'menu' not in st.session_state:
         st.session_state['menu'] = "Radar"
     menu_secim = st.session_state['menu']
-    
-    if not tum_hisseler.empty:
-        st.subheader("Tüm Hisseler")
-        secim = st.selectbox("Hisse Ara", options=tum_hisseler['Hisse'].tolist(), key="hisse_secim")
-        if st.button("Analiz Et"):
-            st.session_state['secili_hisse'] = secim
-            st.rerun()
 
 # --- ÜST SEKMELER ---
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "📊 Getiri", "💎 Değerleme", "📈 Karlılık", "🚀 Büyüme", 
+    "📊 Getiri", "💎 Değerleme", "📈 Karlılık", "🚀 Büyme", 
     "📋 Bilanço", "💵 Gelir Tablosu", "💧 Nakit Akım", "🔥 Yüksek Potansiyel"
 ])
 
+# TAB 1: GETİRİ (Filtrelenmiş veri)
 with tab1:
     st.subheader("📊 Getiri Tablosu (Alfabetik)")
-    if not analizli_df.empty:
-        df_getiri = analizli_df.sort_values(by='Hisse', ascending=True)
+    if not df_filtre.empty:
+        df_getiri = df_filtre.sort_values(by='Hisse', ascending=True)
         cols = ['Hisse', 'Fiyat', 'Gün %', 'Hacim', 
                 'Getiri % (Son 1 hafta)', 'Getiri % (Son 1 ay)', 
                 'Getiri % (Son 3 ay)', 'Getiri % (Son 6 ay)', 
@@ -312,42 +341,43 @@ with tab1:
                 df_getiri[c] = "N/A"
         st.dataframe(df_getiri[cols], width='stretch', hide_index=True)
     else:
-        st.error("Veri yüklenemedi.")
+        st.error("Filtrelerle eşleşen hisse bulunamadı.")
 
+# Diğer sekmeler (Filtrelenmiş veri kullanılır)
 with tab2:
     st.subheader("💎 Değerleme (Alfabetik)")
-    if not analizli_df.empty:
-        st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Fiyat', 'Piyasa Değeri', 'Yatırım Fırsat Skoru', 'Tavan Potansiyeli (%)']], width='stretch', hide_index=True)
+    if not df_filtre.empty:
+        st.dataframe(df_filtre.sort_values(by='Hisse', ascending=True)[['Hisse', 'Fiyat', 'Piyasa Değeri', 'Yatırım Fırsat Skoru', 'Tavan Potansiyeli (%)']], width='stretch', hide_index=True)
 
 with tab3:
     st.subheader("📈 Karlılık (Alfabetik)")
-    if not analizli_df.empty:
-        st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Fiyat', 'Gün %', 'RSI', 'AI Sinyal']], width='stretch', hide_index=True)
+    if not df_filtre.empty:
+        st.dataframe(df_filtre.sort_values(by='Hisse', ascending=True)[['Hisse', 'Fiyat', 'Gün %', 'RSI', 'AI Sinyal']], width='stretch', hide_index=True)
 
 with tab4:
     st.subheader("🚀 Büyüme (Alfabetik)")
-    if not analizli_df.empty:
-        st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Getiri % (Son 1 ay)', 'Getiri % (Son 3 ay)', 'Getiri % (Yılbaşından)']], width='stretch', hide_index=True)
+    if not df_filtre.empty:
+        st.dataframe(df_filtre.sort_values(by='Hisse', ascending=True)[['Hisse', 'Getiri % (Son 1 ay)', 'Getiri % (Son 3 ay)', 'Getiri % (Yılbaşından)']], width='stretch', hide_index=True)
 
 with tab5:
     st.subheader("📋 Bilanço (Alfabetik)")
-    if not analizli_df.empty:
-        st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Piyasa Değeri']], width='stretch', hide_index=True)
+    if not df_filtre.empty:
+        st.dataframe(df_filtre.sort_values(by='Hisse', ascending=True)[['Hisse', 'Piyasa Değeri']], width='stretch', hide_index=True)
 
 with tab6:
     st.subheader("💵 Gelir Tablosu (Alfabetik)")
-    if not analizli_df.empty:
-        st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Hacim']], width='stretch', hide_index=True)
+    if not df_filtre.empty:
+        st.dataframe(df_filtre.sort_values(by='Hisse', ascending=True)[['Hisse', 'Hacim']], width='stretch', hide_index=True)
 
 with tab7:
     st.subheader("💧 Nakit Akım (Alfabetik)")
-    if not analizli_df.empty:
-        st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Hacim', 'Gün %']], width='stretch', hide_index=True)
+    if not df_filtre.empty:
+        st.dataframe(df_filtre.sort_values(by='Hisse', ascending=True)[['Hisse', 'Hacim', 'Gün %']], width='stretch', hide_index=True)
 
 with tab8:
     st.subheader("🔥 Yüksek Potansiyelli Hisseler (Skor'a Göre)")
-    if not analizli_df.empty:
-        df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
+    if not df_filtre.empty:
+        df_tavan = df_filtre.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
         st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
 
 # --- SOL MENÜ İÇERİKLERİ ---
@@ -362,46 +392,18 @@ if menu_secim == "Temel Analiz":
         st.info("**Sektör Analizi**\n\nŞirketin bulunduğu sektörün büyüme potansiyeline bakılır.\n\n*AI:* Teknoloji ve savunma sanayi öne çıkıyor.")
     with col3:
         st.info("**Şirket Analizi**\n\nBilanço ve gelir tablosu kontrol edilir.\n\n*AI:* Borçluluk oranları düşük.")
-    if not analizli_df.empty and 'sector' in analizli_df.columns:
-        st.subheader("Sektör Bazlı Şirket Listesi")
-        st.dataframe(analizli_df[['Hisse', 'Piyasa Değeri', 'sector']].head(20), width='stretch', hide_index=True)
 
 elif menu_secim == "Detaylı Analiz":
     st.subheader("🔬 Detaylı Analiz")
-    st.write("**En Olası İlk 10 Hisse (Yatırım Skoruna Göre)**")
-    if not analizli_df.empty:
-        potansiyel_hisseler = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(10)
+    st.write("**En Olası İlk 10 Hisse (Filtrelenmiş Veriden)**")
+    if not df_filtre.empty:
+        potansiyel_hisseler = df_filtre.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(10)
         st.dataframe(potansiyel_hisseler[['Hisse', 'Fiyat', 'Piyasa Değeri', 'Yatırım Fırsat Skoru', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
-    
-    st.markdown("---")
-    st.write("**Hisse Seçimi**")
-    if 'secili_hisse' in st.session_state:
-        sec = st.session_state['secili_hisse']
-    else:
-        sec = "GARAN"
-    if not analizli_df.empty:
-        sec = st.selectbox("Analiz Edilecek Hisse", analizli_df['Hisse'].tolist(), index=0, key="detay_secim")
-    
-    if st.button("Derinlemesine Analizi Başlat"):
-        hisse_verisi = analizli_df[analizli_df['Hisse'] == sec]
-        if not hisse_verisi.empty:
-            st.success(f"{sec} için detaylı veriler:")
-            st.write(f"**Güncel Fiyat:** {hisse_verisi.iloc[0]['Fiyat']}")
-            st.write(f"**Piyasa Değeri:** {hisse_verisi.iloc[0].get('Piyasa Değeri', 'N/A')}")
-            st.write(f"**Günlük Değişim:** {hisse_verisi.iloc[0]['Gün %']}")
-            st.write(f"**Yatırım Fırsat Skoru:** {hisse_verisi.iloc[0]['Yatırım Fırsat Skoru']}")
-            st.write(f"**AI Sinyal:** {hisse_verisi.iloc[0]['AI Sinyal']}")
-            st.markdown(f"**Neden Alınmalı?** \n\n> {hisse_verisi.iloc[0]['Neden Alınmalı?']}")
-        else:
-            st.error("Seçilen hisse veri setinde bulunamadı.")
 
 elif menu_secim == "Orijinal Hisseler":
     st.subheader("🚀 Orijinal Hisseler")
-    if not analizli_df.empty:
-        df_orig = analizli_df.copy()
-        df_orig['Piyasa_Numeric'] = df_orig['Piyasa Değeri'].apply(lambda x: 0 if 'mr' not in str(x) else float(str(x).replace(' mr', '')) * 1_000_000_000)
-        df_orig = df_orig[df_orig['Piyasa_Numeric'] < 1_000_000_000].sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
-        st.dataframe(df_orig[['Hisse', 'Fiyat', 'Piyasa Değeri', 'Yatırım Fırsat Skoru', 'AI Sinyal']], width='stretch', hide_index=True)
+    if not df_filtre.empty:
+        st.dataframe(df_filtre[['Hisse', 'Fiyat', 'Piyasa Değeri', 'Yatırım Fırsat Skoru', 'AI Sinyal']].head(20), width='stretch', hide_index=True)
 
 elif menu_secim == "Radar":
     st.success("Radar modülü aktif. Üst menüden analiz yapabilirsiniz.")
