@@ -30,24 +30,19 @@ def format_percent(val):
     try: return f"{float(val):.2f}%"
     except: return "N/A"
 
-# --- MAKRO VERİ ENTEGRASYONU (TCMB vb.) ---
+# --- MAKRO VERİ ENTEGRASYONU ---
 @st.cache_data(ttl=3600)
 def get_macro_data():
-    """TCMB ve piyasa verilerini çeker. Erişilemezse 2026 varsayılan tahminlerini kullanır."""
     try:
-        # TCMB Döviz Kurları (API'ye örnek: XML)
         url = "https://www.tcmb.gov.tr/kurlar.aspx"
         response = requests.get(url, timeout=5)
-        # (Burada XML parse işlemi yapılabilir ama basitlik için varsayılan veriyi kullanıyoruz)
     except:
         pass
-
-    # 2026 yılı için tahmini makro veriler (API'ye ulaşılamazsa)
     return {
-        "enflasyon": 23.6,   # Yıllık TÜFE
-        "faiz": 28.5,        # Politika faizi
-        "buyume": 3.9,       # GSYH büyümesi
-        "cds": 320           # Tahmini CDS primi (Örnek)
+        "enflasyon": 23.6,
+        "faiz": 28.5,
+        "buyume": 3.9,
+        "cds": 320
     }
 
 # --- TRADINGVIEW TOKEN ---
@@ -64,7 +59,7 @@ def get_auth_token():
     except:
         return None
 
-# --- VERİ ÇEKME (Temel Verilerle Zenginleştirildi) ---
+# --- VERİ ÇEKME ---
 @st.cache_data(ttl=60)
 def tum_bist_hisselerini_getir():
     url = "https://scanner.tradingview.com/turkey/scan"
@@ -121,13 +116,15 @@ def tum_bist_hisselerini_getir():
         for col in ['F/K', 'PD/DD', 'ROE', 'Net Marj', 'Borç/Özkaynak', 'Temettü Verimi']:
             df[col] = pd.to_numeric(df[col], errors='coerce')
             
-        df['Sektör'] = df['Sektör'].astype(str)
+        # Sektör sütununu string yap ve NaN'leri 'Diğer' ile doldur
+        df['Sektör'] = df['Sektör'].astype(str).replace('nan', 'Diğer').fillna('Diğer')
+        
         return df
     except Exception as e:
         st.error(f"TradingView verileri alınamadı: {e}")
         return pd.DataFrame()
 
-# --- YZ MODELİ (GELİŞTİRİLMİŞ) ---
+# --- YZ MODELİ ---
 def hesapla_ai_verileri(df):
     if df.empty:
         return df
@@ -166,7 +163,13 @@ def hesapla_ai_verileri(df):
     
     # --- SEKTÖREL F/K ve PD/DD EŞİKLERİ ---
     def sektorel_degerleme(row):
-        sektor = row.get('Sektör', '')
+        # Sektör değerini string olarak al, NaN/float gelirse 'Diğer' yap
+        sektor = row.get('Sektör')
+        if not isinstance(sektor, str):
+            sektor = str(sektor)
+        if sektor.lower() == 'nan' or sektor == '':
+            sektor = 'Diğer'
+            
         fk = safe_float(row.get('F/K'))
         
         # Örnek eşikler
@@ -188,7 +191,7 @@ def hesapla_ai_verileri(df):
     
     df['Sektörel Değerleme'] = df.apply(sektorel_degerleme, axis=1)
     
-    # Yatırım Fırsat Skoru (Sektörel Eşiklerle Güncellendi)
+    # Yatırım Fırsat Skoru
     def hesapla_skor(row):
         skor = 50
         pot = safe_float(row['Tavan Potansiyeli (%)'])
@@ -210,7 +213,6 @@ def hesapla_ai_verileri(df):
         elif y1 > 10: skor += 10
         elif y1 < 0: skor -= 5
         
-        # Sektörel F/K Skoru
         if row.get('Sektörel Değerleme') == "Çok Ucuz": skor += 10
         elif row.get('Sektörel Değerleme') == "Ucuz": skor += 5
         elif row.get('Sektörel Değerleme') == "Pahalı": skor -= 5
@@ -248,6 +250,7 @@ def hesapla_ai_verileri(df):
     
     df['Neden Alınmalı?'] = df.apply(neden_yukselir, axis=1)
     
+    # Formatlama
     df['Tavan Potansiyeli (%)'] = df['Tavan Potansiyeli (%)'].apply(format_percent)
     df['Gün %'] = df['Gün %'].apply(format_percent)
     df['Getiri % (Son 1 hafta)'] = df['Getiri % (Son 1 hafta)'].apply(format_percent)
@@ -271,7 +274,7 @@ with st.spinner("Veriler işleniyor..."):
     else:
         analizli_df = pd.DataFrame()
 
-# --- SOL MENÜ (Yeni Modül Eklendi) ---
+# --- SOL MENÜ ---
 with st.sidebar:
     st.header("📋 Keşfet")
     if st.button("🔍 Radar", use_container_width=True):
@@ -292,7 +295,6 @@ with st.sidebar:
         st.session_state['menu'] = "Detaylı Analiz"
     if st.button("💎 Orijinal Hisseler", use_container_width=True):
         st.session_state['menu'] = "Orijinal Hisseler"
-    # --- YENİ: GRAFİK ANALİZİ ---
     if st.button("📈 Grafik Analizi", use_container_width=True):
         st.session_state['menu'] = "Grafik Analizi"
     
@@ -320,7 +322,6 @@ with tab1:
     else:
         st.error("Veri yüklenemedi.")
 
-# Diğer sekmeler (Aynen korundu)
 with tab2:
     st.subheader("💎 Değerleme")
     if not analizli_df.empty:
@@ -363,7 +364,6 @@ st.markdown("---")
 if menu_secim == "Temel Analiz":
     st.subheader("📈 Profesyonel Temel Analiz")
     
-    # 1. MAKROEKONOMİ ANALİZİ (2026 + API)
     st.markdown("### 🌍 Makroekonomi Analizi (2026)")
     macro = get_macro_data()
     
@@ -383,13 +383,9 @@ if menu_secim == "Temel Analiz":
         st.write(f"**Piyasa Değerlemesi:** {degerleme_durumu}")
         st.write(f"**YZ Yorumu:** Yüksek enflasyon ve faiz ortamı, temettü ve nakit akışı güçlü şirketleri öne çıkarıyor.")
         
-        # 2026 SENARYO MODÜLÜ
         st.markdown("### 🎯 2026 Senaryo Analizi")
-        st.write("Piyasa koşulları (F/K, RSI) baz alınarak üretilmiştir.")
-        
-        # Senaryoları hesapla
-        boğa_fk = ort_fk * 1.2  # F/K artarsa
-        ayı_fk = ort_fk * 0.8    # F/K düşerse
+        boğa_fk = ort_fk * 1.2
+        ayı_fk = ort_fk * 0.8
         
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -405,7 +401,6 @@ if menu_secim == "Temel Analiz":
             st.write(f"F/K {ort_fk:.2f} → {ayı_fk:.2f}")
             st.write("Faizlerin yükselmesi piyasayı baskılar, getiriler düşer.")
     
-    # 2. SEKTÖREL ANALİZ + GÖRSELLEŞTİRME
     st.markdown("### 🏭 Sektörel Analiz")
     if not analizli_df.empty and 'Sektör' in analizli_df.columns:
         sektor_df = analizli_df.copy()
@@ -418,7 +413,6 @@ if menu_secim == "Temel Analiz":
         
         st.dataframe(sektor_ozet, width='stretch', hide_index=True)
         
-        # Plotly Bar Grafiği
         st.subheader("📊 Sektör Bazlı F/K ve ROE Karşılaştırması")
         fig = go.Figure()
         fig.add_trace(go.Bar(
@@ -433,7 +427,6 @@ if menu_secim == "Temel Analiz":
         en_iyi_sektor = sektor_ozet['Getiri % (Son 1 yıl)'].astype(float).idxmax()
         st.write(f"**YZ Yorumu:** En güçlü getiri potansiyeli **{en_iyi_sektor}** sektöründe görünüyor.")
     
-    # 3. ŞİRKET FİNANSALLARI
     st.markdown("### 💼 Şirket Finansalları")
     if not analizli_df.empty:
         st.dataframe(analizli_df[['Hisse', 'Piyasa Değeri', 'F/K', 'PD/DD', 'ROE', 'Net Marj', 'Sektörel Değerleme']].sort_values(by='ROE', ascending=False).head(15), width='stretch', hide_index=True)
@@ -453,19 +446,14 @@ elif menu_secim == "Grafik Analizi":
             if not secilen_hisseler:
                 st.warning("Lütfen en az bir hisse seçin.")
             else:
-                # Geçmiş veri çekme (Yahoo Finance)
                 fig = go.Figure()
                 
                 for hisse in secilen_hisseler:
                     try:
-                        # Yatırımcıya daha stabil gelmesi için Yahoo Finance kullanıyoruz.
                         import yfinance as yf
                         veri = yf.download(f"{hisse}.IS", period="6mo", progress=False, auto_adjust=False)
-                        
                         if not veri.empty:
-                            # Normalize edilmiş performans
                             veri['Normalize'] = (veri['Close'] / veri['Close'].iloc[0]) * 100
-                            
                             fig.add_trace(go.Scatter(
                                 x=veri.index, y=veri['Normalize'], mode='lines', name=hisse
                             ))
