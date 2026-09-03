@@ -3,5 +3,7 @@ yfinance
 pandas
 plotly
 numpy
-requests
+selenium
+webdriver-manager
+lxml
 beautifulsoup4
