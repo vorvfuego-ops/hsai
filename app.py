@@ -1,18 +1,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import requests
-import yfinance as yf
-import time
 import warnings
 
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="BIST Pro AI Terminali", layout="wide")
 
-# CSS (Fintables benzeri stil)
+# --- FINTABLES STİLİ (CSS) ---
 st.markdown("""
 <style>
     .stApp { background-color: #121212; color: #E0E0E0; }
@@ -28,7 +24,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Yardımcı Fonksiyonlar ---
+# --- GÜVENLİ VERİ DÖNÜŞTÜRÜCÜ ---
 def safe_float(val):
     if val is None: return 0.0
     if isinstance(val, pd.Series):
@@ -38,7 +34,7 @@ def safe_float(val):
     try: return float(val)
     except: return 0.0
 
-# --- TradingView Token ---
+# --- TRADINGVIEW TOKEN DOĞRULAMA ---
 def get_auth_token():
     try:
         username = st.secrets["tradingview"]["username"]
@@ -52,197 +48,260 @@ def get_auth_token():
     except:
         return None
 
-# --- Tüm BIST Hisselerini Çekme ---
+# --- TÜM BIST HİSSELERİNİ TRADINGVIEW'DEN ÇEKME (yfinance YOK) ---
 @st.cache_data(ttl=600)
 def tum_bist_hisselerini_getir():
     try:
         from tradingview_screener import Query
         token = get_auth_token()
+        
+        # Fintables'taki tüm sütunları TradingView'den çekiyoruz
         q = Query().set_markets('turkey').select(
-            'name', 'close', 'change', 'volume', 'market_cap_basic', 'RSI', 'sector', 'high_all_calc'
+            'name', 
+            'close', 
+            'change', 
+            'volume', 
+            'market_cap_basic', 
+            'sector',
+            'high_all_calc',       # 52 Haftalık Yüksek
+            'RSI',
+            'Perf.W',              # Son 1 Hafta
+            'Perf.1M',             # Son 1 Ay
+            'Perf.3M',             # Son 3 Ay
+            'Perf.6M',             # Son 6 Ay
+            'Perf.YTD'             # Yılbaşından Bugüne
         ).order_by('volume', ascending=False).limit(500)
+        
         try:
             total, df = q.get_scanner_data(auth_token=token)
         except:
             total, df = q.get_scanner_data()
+        
+        # Veri yoksa boş döndür
+        if df.empty:
+            return pd.DataFrame()
+            
+        # Sütunları Fintables isimlerine çevir
+        df = df.rename(columns={
+            'name': 'Hisse',
+            'close': 'Fiyat',
+            'change': 'Gün %',
+            'volume': 'Hacim',
+            'Perf.W': 'Getiri % (Son 1 hafta)',
+            'Perf.1M': 'Getiri % (Son 1 ay)',
+            'Perf.3M': 'Getiri % (Son 3 ay)',
+            'Perf.6M': 'Getiri % (Son 6 ay)',
+            'Perf.YTD': 'Getiri % (Yılbaşından)'
+        })
+        
+        # Eksik kolonları tamamla (Bazı hisselerde 1 yıl verisi olmayabilir)
+        if 'Getiri % (Son 1 yıl)' not in df.columns:
+            df['Getiri % (Son 1 yıl)'] = "N/A"
+            
         return df
-    except:
+    except Exception as e:
+        st.error(f"TradingView verileri çekilemedi: {e}")
         return pd.DataFrame()
 
-# --- AI Hesaplama Motoru (Güvenli) ---
+# --- YAPAY ZEKA MOTORU (Hesaplamalar) ---
 def hesapla_ai_verileri(df):
     if df.empty:
         return df
-    # 52 Haftalık yüksek
-    yuksekler = []
-    for isim in df['name']:
-        try:
-            v = yf.download(isim + ".IS", period="1y", progress=False, auto_adjust=False)
-            yuksek = safe_float(v['High'].max()) if not v.empty else 0
-        except:
-            yuksek = 0
-        yuksekler.append(yuksek)
-    df['52H_Yuksek'] = yuksekler
-    df['Tavan Potansiyeli (%)'] = ((df['52H_Yuksek'] - df['close']) / df['close']) * 100
-
+    
+    # 52 Haftalık Yüksek ve Tavan Potansiyeli
+    # TradingView "high_all_calc" verisini sağlar, yfinance'e gerek yok!
+    df['52H_Yuksek'] = pd.to_numeric(df.get('high_all_calc', 0), errors='coerce').fillna(0)
+    df['Fiyat'] = pd.to_numeric(df['Fiyat'], errors='coerce').fillna(0)
+    
+    # Tavan Potansiyeli Hesabı
+    df['Tavan Potansiyeli (%)'] = ((df['52H_Yuksek'] - df['Fiyat']) / df['Fiyat']) * 100
+    
+    # Neden Yükselebilir? (AI Yorumu)
     def neden_yukselir(row):
         nedenler = []
-        rsi = safe_float(row['RSI'])
-        if rsi > 70: nedenler.append("Aşırı alım")
-        elif rsi > 50: nedenler.append("Pozitif RSI")
-        pot = safe_float(row['Tavan Potansiyeli (%)'])
-        if pot > 20: nedenler.append("Tavanına uzak")
-        elif pot > 5: nedenler.append("Zirveye yakın")
-        if safe_float(row['change']) > 2: nedenler.append("Bugün güçlü")
-        if safe_float(row['volume']) > 1000000: nedenler.append("Yüksek hacim")
-        return ", ".join(nedenler) if nedenler else "Normal"
-
+        rsi = pd.to_numeric(row.get('RSI', 0), errors='coerce')
+        if pd.notna(rsi):
+            if rsi > 70: nedenler.append("Aşırı alım, güçlü momentum")
+            elif rsi > 50: nedenler.append("Pozitif alıcı baskısı")
+        
+        pot = safe_float(row.get('Tavan Potansiyeli (%)'))
+        if pot > 20: nedenler.append("Tavanına çok uzak")
+        elif pot > 5: nedenler.append("52 haftalık zirvesine yakın")
+        
+        gün = safe_float(row.get('Gün %'))
+        if gün > 2: nedenler.append("Bugün güçlü alım")
+        
+        hacim = safe_float(row.get('Hacim'))
+        if hacim > 1000000: nedenler.append("Likidite çok yüksek")
+        
+        return ", ".join(nedenler) if nedenler else "Normal piyasa seyri"
+    
     df['Neden Yükselebilir?'] = df.apply(neden_yukselir, axis=1)
-
-    # Monte Carlo (Hata düzeltildi: abs kullanıldı)
+    
+    # Monte Carlo AI Sinyali (Fiyat Tahmini)
     def monte_carlo(row):
-        fiyat = safe_float(row['close'])
-        degisim = safe_float(row['change'])
-        vol = abs(degisim) / 100.0
-        sims = np.random.normal(fiyat, vol * fiyat, 200)
+        fiyat = safe_float(row.get('Fiyat'))
+        degisim = abs(safe_float(row.get('Gün %'))) / 100.0
+        # Negatif standart sapmayı önle (abs kullan)
+        sims = np.random.normal(fiyat, max(degisim * fiyat, 0.01), 200)
         return np.median(sims)
-
+    
     df['Tahmini Fiyat'] = df.apply(monte_carlo, axis=1).round(2)
-    df['Alt Eşik'] = (df['Tahmini Fiyat'] - (df['Tahmini Fiyat']*0.05)).round(2)
-    df['Üst Eşik'] = (df['Tahmini Fiyat'] + (df['Tahmini Fiyat']*0.05)).round(2)
-    df['Hata Payı'] = ((df['Üst Eşik'] - df['Alt Eşik']) / 2).round(2)
-
-    def sinyal(row):
-        if safe_float(row['Tavan Potansiyeli (%)']) > 10 and safe_float(row['RSI']) < 70:
+    df['Hata Payı'] = (df['Fiyat'] * 0.02).round(2)
+    df['Alt Eşik'] = (df['Tahmini Fiyat'] - df['Hata Payı']).round(2)
+    df['Üst Eşik'] = (df['Tahmini Fiyat'] + df['Hata Payı']).round(2)
+    
+    # AI Sinyalleri
+    def sinyal_uret(row):
+        if safe_float(row.get('Tavan Potansiyeli (%)')) > 10 and pd.to_numeric(row.get('RSI', 50), errors='coerce') < 70:
             return "🟢 AL"
-        elif safe_float(row['Tavan Potansiyeli (%)']) > 0:
+        elif safe_float(row.get('Tavan Potansiyeli (%)')) > 0:
             return "🟡 TUT"
         else:
             return "🔴 SAT"
-
-    df['AI Sinyal'] = df.apply(sinyal, axis=1)
+    
+    df['AI Sinyal'] = df.apply(sinyal_uret, axis=1)
+    
+    # Temizlik: Geçici sütunları kaldır
+    df = df.drop(columns=['52H_Yuksek', 'high_all_calc'], errors='ignore')
+    
     return df
 
-# --- Veri Yükleme ---
-with st.spinner("Veriler yükleniyor..."):
+# --- VERİ YÜKLEME ---
+with st.spinner("TradingView'den anlık veriler yükleniyor..."):
     tum_hisseler = tum_bist_hisselerini_getir()
+    
     if not tum_hisseler.empty:
         analizli_df = hesapla_ai_verileri(tum_hisseler)
+    else:
+        analizli_df = pd.DataFrame()
 
-# --- Ana Başlık ---
+# --- ANA ARAYÜZ ---
 st.title("📊 BIST Pro AI Terminali")
+st.caption("Fintables menü yapısı + TradingView verileri + Yapay Zeka Motoru")
 
-# --- Sol Menü ---
+# --- SOL MENÜ ---
 with st.sidebar:
     st.header("📋 Menü")
-    menu = st.radio("Menü Seçin", ["Radar", "Hisse", "Endeksler", "VIP", "Kripto"], key="menu")
+    menu_secim = st.radio(
+        "Menü Seçin",
+        ["Radar", "Hisse", "Endeksler", "VIP", "Kripto"],
+        key="sidebar_menu"
+    )
     st.markdown("---")
+    st.caption("Veriler TradingView hesabınızla çekildi.")
+    
     if not tum_hisseler.empty:
         st.subheader("Tüm Hisseler")
-        secim = st.selectbox("Hisse Seç", tum_hisseler['name'].tolist())
+        secim = st.selectbox("Hisse Ara ve Seç", options=tum_hisseler['Hisse'].tolist(), key="hisse_secim")
         if st.button("Analiz Et"):
             st.session_state['secili_hisse'] = secim
             st.rerun()
 
-# --- Sekmeler ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
-    "🚀 Yüksek Potansiyel", "📊 Getiri", "💎 Değerleme", "📈 Karlılık", "🚀 Büyüme",
-    "📋 Bilanço", "💵 Gelir Tablosu", "💧 Nakit Akım", "🧠 Derinlemesine Analiz"
+# --- ÜST SEKMELER (Fintables Menü Düzeni) ---
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "📊 Getiri", "💎 Değerleme", "📈 Karlılık", "🚀 Büyüme", 
+    "📋 Bilanço", "💵 Gelir Tablosu", "💧 Nakit Akım", "🚀 Yüksek Potansiyel"
 ])
 
-# TAB 1: Yüksek Potansiyel
+# TAB 1: GETİRİ (Fintables'taki tablonun aynısı)
 with tab1:
-    st.subheader("🔥 Yüksek Potansiyelli Tavan Hisseleri")
-    if not tum_hisseler.empty:
-        df_tavan = analizli_df.sort_values(by='Tavan Potansiyeli (%)', ascending=False).head(10)
-        st.dataframe(df_tavan[['name', 'close', 'change', 'Tavan Potansiyeli (%)', 'Neden Yükselebilir?']], width='stretch', hide_index=True)
-    else:
-        st.error("Veri yok")
-
-# TAB 2: Getiri
-with tab2:
     st.subheader("📊 Getiri Tablosu")
-    if not tum_hisseler.empty:
-        df_getiri = analizli_df.sort_values(by='change', ascending=False).head(50)
-        st.dataframe(df_getiri[['name', 'close', 'change', 'volume', 'Tavan Potansiyeli (%)', 'RSI']], width='stretch', hide_index=True)
+    if not analizli_df.empty:
+        # Sıralama: Günlük değişime göre
+        df_getiri = analizli_df.sort_values(by='Gün %', ascending=False)
+        st.dataframe(df_getiri[['Hisse', 'Fiyat', 'Gün %', 'Hacim', 'Getiri % (Son 1 hafta)', 'Getiri % (Son 1 ay)', 'Getiri % (Son 3 ay)', 'Getiri % (Son 6 ay)', 'Getiri % (Yılbaşından)']], width='stretch', hide_index=True)
     else:
-        st.error("Veri yok")
+        st.error("Veri yüklenemedi. TradingView bağlantısını kontrol edin.")
 
-# TAB 3: Değerleme
-with tab3:
+# TAB 2: DEĞERLEME
+with tab2:
     st.subheader("💎 Değerleme")
-    if not tum_hisseler.empty:
-        df_val = tum_hisseler[['name', 'close', 'market_cap_basic']].head(50)
-        st.dataframe(df_val, width='stretch', hide_index=True)
+    if not analizli_df.empty:
+        st.dataframe(analizli_df[['Hisse', 'Fiyat', 'Tahmini Fiyat', 'Hata Payı', 'Alt Eşik', 'Üst Eşik']], width='stretch', hide_index=True)
     else:
-        st.error("Veri yok")
+        st.warning("Veri bekleniyor...")
 
-# TAB 4: Karlılık
-with tab4:
+# TAB 3: KARLILIK
+with tab3:
     st.subheader("📈 Karlılık")
-    if not tum_hisseler.empty:
-        st.dataframe(analizli_df[['name', 'close', 'RSI', 'AI Sinyal']].head(50), width='stretch', hide_index=True)
+    if not analizli_df.empty:
+        st.dataframe(analizli_df[['Hisse', 'Fiyat', 'Gün %', 'RSI']], width='stretch', hide_index=True)
     else:
-        st.error("Veri yok")
+        st.warning("Veri bekleniyor...")
 
-# TAB 5: Büyüme
-with tab5:
+# TAB 4: BÜYÜME
+with tab4:
     st.subheader("🚀 Büyüme")
-    if not tum_hisseler.empty:
-        st.dataframe(tum_hisseler[['name', 'close', 'volume']].head(50), width='stretch', hide_index=True)
+    if not analizli_df.empty:
+        st.dataframe(analizli_df[['Hisse', 'Getiri % (Son 1 ay)', 'Getiri % (Son 3 ay)', 'Getiri % (Yılbaşından)']], width='stretch', hide_index=True)
     else:
-        st.error("Veri yok")
+        st.warning("Veri bekleniyor...")
 
-# TAB 6: Bilanço
-with tab6:
+# TAB 5: BİLANÇO
+with tab5:
     st.subheader("📋 Bilanço")
-    if not tum_hisseler.empty:
-        st.dataframe(tum_hisseler[['name', 'market_cap_basic']].head(50), width='stretch', hide_index=True)
+    if not analizli_df.empty:
+        st.dataframe(analizli_df[['Hisse', 'Fiyat']], width='stretch', hide_index=True)
     else:
-        st.error("Veri yok")
+        st.warning("Veri bekleniyor...")
 
-# TAB 7: Gelir Tablosu
-with tab7:
+# TAB 6: GELİR TABLOSU
+with tab6:
     st.subheader("💵 Gelir Tablosu")
-    if not tum_hisseler.empty:
-        st.dataframe(tum_hisseler[['name', 'close']].head(50), width='stretch', hide_index=True)
+    if not analizli_df.empty:
+        st.dataframe(analizli_df[['Hisse', 'Hacim']], width='stretch', hide_index=True)
     else:
-        st.error("Veri yok")
+        st.warning("Veri bekleniyor...")
 
-# TAB 8: Nakit Akım
-with tab8:
+# TAB 7: NAKİT AKIM
+with tab7:
     st.subheader("💧 Nakit Akım")
-    if not tum_hisseler.empty:
-        st.dataframe(tum_hisseler[['name', 'volume']].head(50), width='stretch', hide_index=True)
+    if not analizli_df.empty:
+        st.dataframe(analizli_df[['Hisse', 'Hacim', 'Gün %']], width='stretch', hide_index=True)
+    else:
+        st.warning("Veri bekleniyor...")
+
+# TAB 8: YÜKSEK POTANSİYEL (Tavan Hisseleri)
+with tab8:
+    st.subheader("🔥 Yüksek Potansiyelli Tavan Hisseleri")
+    if not analizli_df.empty:
+        df_tavan = analizli_df.sort_values(by='Tavan Potansiyeli (%)', ascending=False).head(10)
+        st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Yükselebilir?']], width='stretch', hide_index=True)
     else:
         st.error("Veri yok")
 
-# TAB 9: Derinlemesine Analiz
-with tab9:
-    st.subheader("🧠 Derinlemesine Analiz")
-    if 'secili_hisse' in st.session_state:
-        sec = st.session_state['secili_hisse']
-    else:
-        sec = "GARAN"
-    if not tum_hisseler.empty:
-        sec = st.selectbox("Analiz Edilecek Hisse", tum_hisseler['name'].tolist(), index=0, key="prof")
-    if st.button("Derinlemesine Analizi Başlat"):
-        df = yf.download(sec + ".IS", period="6mo", progress=False, auto_adjust=False)
-        if df.empty:
-            st.error("Veri yok")
+# --- PROFESYONEL ANALİZ (Grafik bölümü - yfinance kaldırıldığı için TradingView verisi ile gösterim yapılır) ---
+st.markdown("---")
+st.subheader("🧠 Profesyonel Analiz (TradingView Verileriyle)")
+
+if 'secili_hisse' in st.session_state:
+    sec = st.session_state['secili_hisse']
+else:
+    sec = "GARAN"
+
+if not analizli_df.empty:
+    sec = st.selectbox("Analiz Edilecek Hisse", analizli_df['Hisse'].tolist(), index=0, key="prof")
+
+if st.button("Analizi Başlat"):
+    # TradingView'den tek hissenin detaylı verilerini çek
+    try:
+        from tradingview_screener import Query
+        token = get_auth_token()
+        q = Query().set_markets('turkey').select(
+            'name', 'close', 'change', 'volume', 'RSI', 'sector', 'high_all_calc', 'Perf.W'
+        )
+        q = q.where(f"name={sec}")
+        total, df_detay = q.get_scanner_data(auth_token=token)
+        
+        if not df_detay.empty:
+            st.success(f"{sec} verileri güncel olarak çekildi.")
+            st.write(f"**Güncel Fiyat:** {safe_float(df_detay.iloc[0]['close'])} TL")
+            st.write(f"**Günlük Değişim:** %{safe_float(df_detay.iloc[0]['change'])}")
+            st.write(f"**Sektör:** {df_detay.iloc[0]['sector']}")
+            st.write(f"**RSI:** {safe_float(df_detay.iloc[0]['RSI'])}")
+            st.write(f"**52 Haftalık Yüksek:** {safe_float(df_detay.iloc[0]['high_all_calc'])}")
         else:
-            df['SMA_20'] = df['Close'].rolling(window=20).mean()
-            df['SMA_50'] = df['Close'].rolling(window=50).mean()
-            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
-            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Fiyat'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], name='SMA 20', line=dict(color='blue')), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], name='SMA 50', line=dict(color='orange')), row=1, col=1)
-            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Hacim', marker_color='gray'), row=2, col=1)
-            delta = df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='purple')), row=3, col=1)
-            fig.update_layout(title=f"{sec} Profesyonel Görünüm", height=800, template='plotly_dark')
-            st.plotly_chart(fig, width='stretch')
+            st.error("Veri bulunamadı.")
+    except Exception as e:
+        st.error(f"Analiz sırasında hata oluştu: {e}")
