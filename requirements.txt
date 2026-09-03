@@ -7,3 +7,4 @@ selenium
 webdriver-manager
 lxml
 beautifulsoup4
+undetected-chromedriver
