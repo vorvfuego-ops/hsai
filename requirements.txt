@@ -3,5 +3,5 @@ pandas
 numpy
 plotly
 requests
-tradingview-screener
 streamlit-autorefresh
+yfinance
