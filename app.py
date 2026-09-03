@@ -65,7 +65,7 @@ def get_auth_token():
     except:
         return None
 
-# --- VERİ ÇEKME (Hacim ve Piyasa Değeri Düzeltildi) ---
+# --- VERİ ÇEKME (HACİM HATASI GİDERİLDİ) ---
 @st.cache_data(ttl=60)
 def tum_bist_hisselerini_getir():
     try:
@@ -95,8 +95,9 @@ def tum_bist_hisselerini_getir():
             'Perf.3Y': 'Getiri % (Son 3 yıl)', 'Perf.5Y': 'Getiri % (Son 5 yıl)'
         })
         
-        # DOĞRU HACİM HESAPLAMASI: Adet * Fiyat = TL Hacim
-        df['Hacim'] = (pd.to_numeric(df['Hacim'], errors='coerce') * pd.to_numeric(df['Fiyat'], errors='coerce')).apply(format_big_number)
+        # DÜZELTME: TradingView BIST için Hacmi 'Bin TL' cinsinden verir.
+        # Bu yüzden 'adet * fiyat' YAPMIYORUZ, direkt mr/mn formatına çeviriyoruz.
+        df['Hacim'] = df['Hacim'].apply(format_big_number)
         
         # Piyasa Değeri: Bin TL'den mr/mn'ye çevir
         df['Piyasa Değeri'] = df['Piyasa Değeri'].apply(format_market_cap)
@@ -218,7 +219,7 @@ with st.spinner("YZ ve Veriler güncelleniyor..."):
     else:
         analizli_df = pd.DataFrame()
 
-# --- SOL MENÜ (Filtreleme Paneli Dahil) ---
+# --- SOL MENÜ ---
 with st.sidebar:
     st.header("📋 Keşfet")
     if st.button("🔍 Radar", use_container_width=True):
