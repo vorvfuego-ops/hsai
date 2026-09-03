@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import time
 import traceback
 
-# Selenium importları
+# Selenium kontrollü import
 try:
     from selenium import webdriver
     from selenium.webdriver.common.by import By
@@ -22,7 +22,7 @@ except ImportError:
 st.set_page_config(page_title="AI Hisse Analiz Sistemi", layout="wide")
 st.title("📈 AI Destekli Hisse Analiz Sistemi")
 
-# ===================== FONKSİYONLAR =====================
+# =========================== FONKSİYONLAR ===========================
 
 @st.cache_data(ttl=3600)
 def get_stock_data(ticker, start_date, end_date):
@@ -49,7 +49,7 @@ def get_fundamental_data(ticker):
 
 @st.cache_data(ttl=3600)
 def get_fintables_radar():
-    """Fintables radar sayfasından verileri çeker (Selenium ile)"""
+    """Fintables radar sayfasından verileri Selenium ile çeker"""
     if not SELENIUM_AVAILABLE:
         return None, "Selenium kurulu değil. Lütfen 'selenium' ve 'webdriver-manager' paketlerini kurun."
     
@@ -68,11 +68,10 @@ def get_fintables_radar():
         driver.get("https://fintables.com/radar/hisse-senetleri")
         time.sleep(5)  # Sayfanın yüklenmesi için bekle
         
-        # Tablo satırlarını bul (sayfa yapısına göre ayarlanmalı)
-        # Örnek seçici: table tbody tr
+        # Tablo satırlarını bul (Fintables sayfa yapısına göre)
         rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
         veriler = []
-        for row in rows[:20]:
+        for row in rows[:20]:  # İlk 20 hisse
             cols = row.find_elements(By.TAG_NAME, "td")
             if len(cols) >= 5:
                 veriler.append({
@@ -92,13 +91,14 @@ def get_fintables_radar():
     except Exception as e:
         return None, f"Selenium hatası: {str(e)}"
 
-# ===================== TEKNİK ANALİZ =====================
+# =========================== TEKNİK ANALİZ ===========================
+
 def teknik_analiz():
     st.subheader("📊 Teknik Analiz")
     col1, col2 = st.columns([1, 3])
     with col1:
         ticker = st.text_input("Hisse Sembolü", value="AAPL", key="teknik_ticker")
-        # Varsayılan başlangıç tarihi: 1 yıl önce
+        # Varsayılan başlangıç: 1 yıl önce (güncel tarih)
         default_start = (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d")
         start_date = st.date_input("Başlangıç Tarihi", value=datetime.strptime(default_start, "%Y-%m-%d"), key="teknik_start")
         end_date = st.date_input("Bitiş Tarihi", value=datetime.now(), key="teknik_end")
@@ -114,11 +114,11 @@ def teknik_analiz():
                 st.error(f"'{ticker}' için veri bulunamadı.")
                 return
             st.session_state['teknik_df'] = df
-            st.session_state['teknik_ticker'] = ticker
     
     if 'teknik_df' in st.session_state:
         df = st.session_state['teknik_df']
-        ticker = st.session_state['teknik_ticker']
+        # ticker değerini widget'tan al
+        ticker = st.session_state.teknik_ticker if 'teknik_ticker' in st.session_state else "AAPL"
         
         # SMA hesapla
         df['SMA_10'] = df['Close'].rolling(window=10).mean()
@@ -156,43 +156,44 @@ def teknik_analiz():
         st.subheader("Son 10 Gün Verileri")
         st.dataframe(df[['Close', 'SMA_10', 'SMA_50']].tail(10).round(2), use_container_width=True)
 
-# ===================== YÜKSEK POTANSİYELLİ TAVAN HİSSELERİ =====================
+# =========================== YÜKSEK POTANSİYELLİ TAVAN HİSSELERİ ===========================
+
 def yuksek_potansiyel():
     st.subheader("🚀 Yüksek Potansiyelli Tavan Hisseleri")
-    st.markdown("**Fintables Radar verilerine göre yüksek potansiyelli hisseler**")
+    st.markdown("**Fintables Radar verilerine göre yüksek potansiyelli hisseler (otomatik güncellenir)**")
     
-    # Otomatik olarak verileri çek
-    with st.spinner("Veriler çekiliyor..."):
+    # Otomatik veri çekimi
+    with st.spinner("Fintables'tan veriler çekiliyor..."):
         df, hata = get_fintables_radar()
     
     if df is not None and not df.empty:
         st.dataframe(df, use_container_width=True)
         st.success("Veriler başarıyla çekildi.")
         
-        # Grafiksel gösterim (örneğin potansiyel dağılımı)
+        # Grafik: Potansiyel yüzdesi
         if 'Potansiyel' in df.columns:
             try:
-                # Potansiyel sütunundan sayısal değerleri çıkarmaya çalış
                 df['Potansiyel_Num'] = df['Potansiyel'].str.replace('%', '').str.replace(',', '.').astype(float)
                 fig = go.Figure()
                 fig.add_trace(go.Bar(x=df['Sembol'], y=df['Potansiyel_Num'], name='Potansiyel %'))
-                fig.update_layout(title="Potansiyel Yüzdesi", xaxis_title="Hisse", yaxis_title="%")
+                fig.update_layout(title="Hisse Bazında Potansiyel Yüzdesi", xaxis_title="Hisse", yaxis_title="%")
                 st.plotly_chart(fig, use_container_width=True)
             except:
                 pass
         
-        # Açıklama: neden yükselebileceği (örnek metin)
+        # Açıklama
         st.markdown("""
         **📈 Yüksek Potansiyel Nedenleri:**
         - Fintables Radar verilerine göre seçilen hisseler, teknik ve temel göstergeler açısından yüksek potansiyele sahiptir.
         - Hacim artışı, fiyat hareketleri ve sektörel gelişmeler bu hisseleri öne çıkarmaktadır.
-        - Detaylı analiz için lütfen ilgili hissenin teknik ve temel analizlerini inceleyiniz.
+        - Detaylı analiz için ilgili hissenin **Teknik Analiz** ve **Temel Analiz** sekmelerini kullanabilirsiniz.
         """)
     else:
         st.error(f"Veri çekilemedi: {hata}")
-        st.info("Fintables sayfasına doğrudan erişmek için 'Genel Sistem Verileri' sekmesini kullanabilirsiniz.")
+        st.info("Alternatif olarak 'Genel Sistem Verileri' sekmesinden Fintables sayfasını doğrudan inceleyebilirsiniz.")
 
-# ===================== TEMEL ANALİZ =====================
+# =========================== TEMEL ANALİZ ===========================
+
 def temel_analiz():
     st.subheader("🏢 Temel Analiz")
     ticker = st.text_input("Hisse Sembolü", value="AAPL", key="temel_ticker")
@@ -208,21 +209,19 @@ def temel_analiz():
                 st.error(f"'{ticker}' için temel veri bulunamadı.")
                 return
             st.session_state['temel_info'] = info
-            st.session_state['temel_ticker'] = ticker
     
     if 'temel_info' in st.session_state:
         info = st.session_state['temel_info']
-        ticker = st.session_state['temel_ticker']
+        ticker = st.session_state.temel_ticker if 'temel_ticker' in st.session_state else "AAPL"
         
-        # Verileri kategorilere ayır
         col1, col2 = st.columns(2)
         
         with col1:
             st.markdown("### 📊 Getiri")
-            st.write(f"**Fiyat Değişimi (Günlük):** {info.get('regularMarketChangePercent', 'N/A')}%")
+            st.write(f"**Günlük Değişim:** {info.get('regularMarketChangePercent', 'N/A')}%")
             st.write(f"**52 Hafta Yüksek:** ${info.get('fiftyTwoWeekHigh', 'N/A')}")
             st.write(f"**52 Hafta Düşük:** ${info.get('fiftyTwoWeekLow', 'N/A')}")
-            st.write(f"**Ortalama Hacim (10 gün):** {info.get('averageVolume10days', 'N/A')}")
+            st.write(f"**Ort. Hacim (10g):** {info.get('averageVolume10days', 'N/A')}")
             
             st.markdown("### 💰 Değerleme")
             st.write(f"**Piyasa Değeri:** ${info.get('marketCap', 'N/A'):,}")
@@ -239,9 +238,9 @@ def temel_analiz():
         
         with col2:
             st.markdown("### 🏦 Borçluluk")
-            st.write(f"**Toplam Borç/Özsermaye:** {info.get('debtToEquity', 'N/A')}")
+            st.write(f"**Borç/Özsermaye:** {info.get('debtToEquity', 'N/A')}")
             st.write(f"**Likidite Oranı:** {info.get('currentRatio', 'N/A')}")
-            st.write(f"**Fazla Borç Oranı:** {info.get('quickRatio', 'N/A')}")
+            st.write(f"**Hızlı Oran:** {info.get('quickRatio', 'N/A')}")
             
             st.markdown("### 📊 Büyüme")
             st.write(f"**Gelir Büyümesi (Yıllık):** {info.get('revenueGrowth', 'N/A')*100 if info.get('revenueGrowth') else 'N/A'}%")
@@ -254,24 +253,24 @@ def temel_analiz():
             
             st.markdown("### 📊 Gelir Tablosu (Özet)")
             st.write(f"**Yıllık Gelir:** ${info.get('totalRevenue', 'N/A'):,}")
-            st.write(f"**Yıllık Brüt Kar:** ${info.get('grossProfits', 'N/A'):,}")
-            st.write(f"**Yıllık Net Gelir:** ${info.get('netIncomeToCommon', 'N/A'):,}")
+            st.write(f"**Brüt Kar:** ${info.get('grossProfits', 'N/A'):,}")
+            st.write(f"**Net Gelir:** ${info.get('netIncomeToCommon', 'N/A'):,}")
             
             st.markdown("### 💵 Nakit Akım")
             st.write(f"**İşletme Nakit Akımı:** ${info.get('operatingCashflow', 'N/A'):,}")
             st.write(f"**Serbest Nakit Akım:** ${info.get('freeCashflow', 'N/A'):,}")
         
-        # Ek açıklama
-        st.info("Temel analiz verileri Yahoo Finance kaynağından alınmaktadır. Bazı veriler BIST hisseleri için eksik olabilir.")
+        st.info("Temel analiz verileri Yahoo Finance'den alınmaktadır. BIST hisselerinde bazı veriler eksik olabilir.")
 
-# ===================== GENEL SİSTEM VERİLERİ =====================
+# =========================== GENEL SİSTEM VERİLERİ ===========================
+
 def genel_sistem():
     st.subheader("🌐 Genel Sistem Verileri - Fintables Radar")
     st.markdown("Aşağıda Fintables.com hisse senedi radar sayfası görüntülenmektedir.")
-    # iframe ile göster
     st.iframe("https://fintables.com/radar/hisse-senetleri", width=1100, height=700)
 
-# ===================== ANA SAYFA =====================
+# =========================== ANA SAYFA SEKMELER ===========================
+
 tab1, tab2, tab3, tab4 = st.tabs(["📊 Teknik Analiz", "🚀 Yüksek Potansiyelli Tavan Hisseleri", "🏢 Temel Analiz", "🌐 Genel Sistem Verileri"])
 
 with tab1:
