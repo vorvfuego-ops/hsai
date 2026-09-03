@@ -17,8 +17,6 @@ st.markdown("""
         background: linear-gradient(180deg, #101624, #0A0E17); 
         border-right: 1px solid #1F2937; 
     }
-    
-    /* Fintables Tarzı Dikey Menü Butonları */
     section[data-testid="stSidebar"] .stButton > button {
         background-color: transparent;
         color: #8B949E;
@@ -35,8 +33,6 @@ st.markdown("""
         background-color: #1F2937;
         color: #58A6FF;
     }
-
-    /* Tablo Başlıkları */
     thead tr th:first-child {display:none}
     thead tr th { 
         background-color: #161B22 !important; 
@@ -46,8 +42,6 @@ st.markdown("""
     }
     tbody tr:nth-child(even) { background-color: #161B22; }
     tbody tr:hover { background-color: #1F2937; }
-    
-    /* Başlık ve Üst Sekmeler */
     h1, h2, h3 { color: #FFFFFF !important; letter-spacing: -0.5px; }
     .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 2px solid #30363D; }
     .stTabs [data-baseweb="tab"] { 
@@ -67,7 +61,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Güvenli Veri Dönüştürücü ---
+# --- YARDIMCI FONKSİYONLAR ---
 def safe_float(val):
     if val is None: return 0.0
     if isinstance(val, pd.Series):
@@ -76,6 +70,21 @@ def safe_float(val):
         except: return 0.0
     try: return float(val)
     except: return 0.0
+
+def format_big_number(val):
+    """Büyük sayıları Fintables gibi anlamlı birimlere (mr, mn, bin) çevirir."""
+    try:
+        val = float(val)
+        if val >= 1_000_000_000:
+            return f"{val / 1_000_000_000:.2f} mr"
+        elif val >= 1_000_000:
+            return f"{val / 1_000_000:.2f} mn"
+        elif val >= 1_000:
+            return f"{val / 1_000:.2f} bin"
+        else:
+            return f"{val:.0f}"
+    except:
+        return "N/A"
 
 # --- TradingView Token ---
 def get_auth_token():
@@ -91,13 +100,12 @@ def get_auth_token():
     except:
         return None
 
-# --- Tüm BIST Hisselerini Çekme (TradingView) - Tüm Sütunlar Eklendi ---
-@st.cache_data(ttl=600)
+# --- Tüm BIST Hisselerini Çekme (Yenileme: 120 saniye) ---
+@st.cache_data(ttl=120)
 def tum_bist_hisselerini_getir():
     try:
         from tradingview_screener import Query
         token = get_auth_token()
-        # Tüm getiri sütunları eklendi (3Y, 5Y dahil)
         q = Query().set_markets('turkey').select(
             'name', 'close', 'change', 'volume', 'market_cap_basic', 
             'sector', 'high_all_calc', 'RSI', 
@@ -120,18 +128,22 @@ def tum_bist_hisselerini_getir():
             'Perf.YTD': 'Getiri % (Yılbaşından)', 'Perf.1Y': 'Getiri % (Son 1 yıl)',
             'Perf.3Y': 'Getiri % (Son 3 yıl)', 'Perf.5Y': 'Getiri % (Son 5 yıl)'
         })
+        
+        # Hacmi ve Piyasa Değerini formatla (mr, mn, bin)
+        df['Hacim'] = df['Hacim'].apply(format_big_number)
+        df['Piyasa Değeri'] = df['Piyasa Değeri'].apply(format_big_number)
+        
         return df
     except Exception:
         return pd.DataFrame()
 
-# --- Quantum AI Motoru (Akıllı ve Yapıcı) ---
+# --- Quantum AI Motoru ---
 def hesapla_ai_verileri(df):
     if df.empty:
         return df
     
     df['52H_Yuksek'] = pd.to_numeric(df.get('high_all_calc', 0), errors='coerce').fillna(0)
     df['Fiyat'] = pd.to_numeric(df['Fiyat'], errors='coerce').fillna(0)
-    df['Piyasa Değeri (Milyon)'] = (df['Piyasa Değeri'] / 1000000).round(2) # Milyon TL bazında
     df['Tavan Potansiyeli (%)'] = ((df['52H_Yuksek'] - df['Fiyat']) / df['Fiyat']) * 100
 
     def neden_yukselir(row):
@@ -151,10 +163,6 @@ def hesapla_ai_verileri(df):
         hacim = safe_float(row.get('Hacim'))
         if hacim > 1000000: nedenler.append("İşlem hacmi çok yüksek (likidite güçlü)")
         
-        # Eğer piyasa değeri düşükse potansiyel daha yüksek
-        pd_val = safe_float(row.get('Piyasa Değeri (Milyon)'))
-        if pd_val < 500: nedenler.append("Düşük piyasa değeri, yüksek hareket potansiyeli")
-        
         return ", ".join(nedenler) if nedenler else "Normal piyasa seyri"
 
     df['Neden Yükselebilir?'] = df.apply(neden_yukselir, axis=1)
@@ -170,7 +178,6 @@ def hesapla_ai_verileri(df):
     df['Alt Eşik'] = (df['Tahmini Fiyat'] - df['Hata Payı']).round(2)
     df['Üst Eşik'] = (df['Tahmini Fiyat'] + df['Hata Payı']).round(2)
 
-    # --- YAPICI AI SİNYAL SİSTEMİ (Al/Sat yerine Potansiyel) ---
     def sinyal_uret(row):
         pot = safe_float(row.get('Tavan Potansiyeli (%)'))
         rsi = pd.to_numeric(row.get('RSI', 50), errors='coerce')
@@ -187,14 +194,22 @@ def hesapla_ai_verileri(df):
     df['AI Sinyal'] = df.apply(sinyal_uret, axis=1)
     df['Neden Alınmalı?'] = df['Neden Yükselebilir?']
     
-    # Gereksiz ara kolonları temizle
     df = df.drop(columns=['52H_Yuksek', 'high_all_calc'], errors='ignore')
     
-    # Piyasa Değeri sütununu düzelt
-    if 'Piyasa Değeri' in df.columns:
-        df = df.drop(columns=['Piyasa Değeri'], errors='ignore')
-
+    # Hacim ve Piyasa Değeri zaten biçimlendirildiği için sayısal işlemlerde kullanılmaz.
+    # Ancak tavan potansiyeli hesaplamasında 52H_Yuksek (sayısal) kullanılır, o yüzden bunu bıraktık.
+    
     return df
+
+# --- YENİLEME BUTONU ---
+col1, col2 = st.columns([8, 1])
+with col1:
+    st.title("⚡ Quantum BIST Terminali")
+    st.caption("Yapay Zeka Destekli Piyasa Analizi")
+with col2:
+    if st.button("🔄 Şimdi Yenile", help="Verileri anlık olarak tazele"):
+        st.cache_data.clear()
+        st.rerun()
 
 # --- Veri Yükleme ---
 with st.spinner("Quantum AI Motoru verileri işliyor..."):
@@ -204,15 +219,9 @@ with st.spinner("Quantum AI Motoru verileri işliyor..."):
     else:
         analizli_df = pd.DataFrame()
 
-# --- Ana Başlık ---
-st.title("⚡ Quantum BIST Terminali")
-st.caption("Yapay Zeka Destekli Piyasa Analizi")
-
-# --- Sol Menü (Fintables Tarzı, Modern ve İşlevsel) ---
+# --- Sol Menü ---
 with st.sidebar:
     st.header("📋 Keşfet")
-    
-    # Modern butonlar
     if st.button("🔍 Radar", use_container_width=True):
         st.session_state['menu'] = "Radar"
     if st.button("📈 Hisseler", use_container_width=True):
@@ -223,7 +232,6 @@ with st.sidebar:
         st.session_state['menu'] = "VIP"
     if st.button("🪙 Kripto", use_container_width=True):
         st.session_state['menu'] = "Kripto"
-    
     st.markdown("---")
     st.header("🧠 Analiz")
     if st.button("📊 Temel Analiz", use_container_width=True):
@@ -232,11 +240,9 @@ with st.sidebar:
         st.session_state['menu'] = "Detaylı Analiz"
     if st.button("💎 Orijinal Hisseler", use_container_width=True):
         st.session_state['menu'] = "Orijinal Hisseler"
-        
     st.markdown("---")
-    st.caption("Quantum AI Çekirdeği Aktif")
+    st.caption("Veriler 2 dakikada bir otomatik güncellenir.")
     
-    # Menü durumu
     if 'menu' not in st.session_state:
         st.session_state['menu'] = "Radar"
     menu_secim = st.session_state['menu']
@@ -248,39 +254,34 @@ with st.sidebar:
             st.session_state['secili_hisse'] = secim
             st.rerun()
 
-# --- Üst Menü Sekmeleri (Getiri, Değerleme vb.) ---
+# --- Üst Menü Sekmeleri ---
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📊 Getiri", "💎 Değerleme", "📈 Karlılık", "🚀 Büyüme", 
     "📋 Bilanço", "💵 Gelir Tablosu", "💧 Nakit Akım", "🔥 Yüksek Potansiyel"
 ])
 
-# TAB 1: GETİRİ (Fintables'taki gibi tam sütunlar, alfabetik)
+# TAB 1: GETİRİ
 with tab1:
     st.subheader("📊 Getiri Tablosu (Tüm Sütunlar)")
     if not analizli_df.empty:
-        # Fintables'taki sıralamayı birebir yapıyoruz
         df_getiri = analizli_df.sort_values(by='Hisse', ascending=True)
-        # Sütunları yeniden sırala
         cols = ['Hisse', 'Fiyat', 'Gün %', 'Hacim', 
                 'Getiri % (Son 1 hafta)', 'Getiri % (Son 1 ay)', 
                 'Getiri % (Son 3 ay)', 'Getiri % (Son 6 ay)', 
                 'Getiri % (Yılbaşından)', 'Getiri % (Son 1 yıl)', 
                 'Getiri % (Son 3 yıl)', 'Getiri % (Son 5 yıl)']
-        
-        # Eksik sütunları doldur (N/A)
         for c in cols:
             if c not in df_getiri.columns:
                 df_getiri[c] = "N/A"
-                
         st.dataframe(df_getiri[cols], width='stretch', hide_index=True)
     else:
         st.error("Veri yüklenemedi.")
 
-# Diğer sekmeler
+# Diğer sekmeler (Değerleme, Karlılık vb. - Hacim ve Piyasa Değeri artık düzgün görünüyor)
 with tab2:
     st.subheader("💎 Değerleme")
     if not analizli_df.empty:
-        st.dataframe(analizli_df[['Hisse', 'Fiyat', 'Piyasa Değeri (Milyon)', 'Tahmini Fiyat', 'Hata Payı', 'Alt Eşik', 'Üst Eşik']], width='stretch', hide_index=True)
+        st.dataframe(analizli_df[['Hisse', 'Fiyat', 'Piyasa Değeri', 'Tahmini Fiyat', 'Hata Payı', 'Alt Eşik', 'Üst Eşik']], width='stretch', hide_index=True)
     else:
         st.warning("Veri bekleniyor...")
 
@@ -301,7 +302,7 @@ with tab4:
 with tab5:
     st.subheader("📋 Bilanço")
     if not analizli_df.empty:
-        st.dataframe(analizli_df[['Hisse', 'Fiyat', 'Piyasa Değeri (Milyon)']], width='stretch', hide_index=True)
+        st.dataframe(analizli_df[['Hisse', 'Fiyat', 'Piyasa Değeri']], width='stretch', hide_index=True)
     else:
         st.warning("Veri bekleniyor...")
 
@@ -350,14 +351,13 @@ elif menu_secim == "Detaylı Analiz":
     st.write("**En Olası İlk 10 Hisse** (Potansiyel ve Alım Gerekçeleriyle)")
     
     if not analizli_df.empty:
-        # "Güçlü Al" ve "Al" olanları filtrele ve sırala
         potansiyel_hisseler = analizli_df[analizli_df['AI Sinyal'].isin(["🟢 Güçlü Al", "🔵 Al"])].head(10)
         
         if potansiyel_hisseler.empty:
             st.info("Şu an kesin alım sinyali veren hisse yok. Yine de en yüksek potansiyelli 10 hisseyi gösteriyorum.")
             potansiyel_hisseler = analizli_df.sort_values(by='Tavan Potansiyeli (%)', ascending=False).head(10)
         
-        st.dataframe(potansiyel_hisseler[['Hisse', 'Fiyat', 'Piyasa Değeri (Milyon)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
+        st.dataframe(potansiyel_hisseler[['Hisse', 'Fiyat', 'Piyasa Değeri', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
     
     st.markdown("---")
     st.write("**Hisse Seçimi**")
@@ -374,7 +374,7 @@ elif menu_secim == "Detaylı Analiz":
         if not hisse_verisi.empty:
             st.success(f"{sec} için detaylı veriler:")
             st.write(f"**Güncel Fiyat:** {safe_float(hisse_verisi.iloc[0]['Fiyat'])} TL")
-            st.write(f"**Piyasa Değeri:** {safe_float(hisse_verisi.iloc[0].get('Piyasa Değeri (Milyon)', 0))} Milyon TL")
+            st.write(f"**Piyasa Değeri:** {hisse_verisi.iloc[0].get('Piyasa Değeri', 'N/A')}")
             st.write(f"**Günlük Değişim:** %{safe_float(hisse_verisi.iloc[0]['Gün %'])}")
             st.write(f"**RSI:** {safe_float(hisse_verisi.iloc[0]['RSI'])}")
             st.write(f"**Sektör:** {hisse_verisi.iloc[0].get('sector', 'Bilinmiyor')}")
@@ -388,9 +388,11 @@ elif menu_secim == "Orijinal Hisseler":
     st.subheader("🚀 Orijinal Hisseler")
     st.write("Endeks dışı, yüksek hacimli ve düşük piyasa değerli fırsatlar")
     if not analizli_df.empty:
-        # Piyasa değeri 500 milyon altı ve hacmi yüksek olanlar
-        df_orig = analizli_df[(analizli_df['Hacim'] > 1000000) & (analizli_df['Piyasa Değeri (Milyon)'] < 1500)].sort_values(by='Hacim', ascending=False).head(20)
-        st.dataframe(df_orig[['Hisse', 'Fiyat', 'Hacim', 'Piyasa Değeri (Milyon)', 'Gün %', 'AI Sinyal']], width='stretch', hide_index=True)
+        # Hacim ve Piyasa Değeri artık metin olduğu için filtreleme yaparken sayıya çeviriyoruz
+        df_orig = analizli_df.copy()
+        df_orig['Hacim_Numeric'] = pd.to_numeric(df_orig['Hacim'].astype(str).str.replace(' mn', '000000').str.replace(' mr', '000000000').str.replace(' bin', '000'), errors='coerce').fillna(0)
+        df_orig = df_orig[df_orig['Hacim_Numeric'] > 1000000].sort_values(by='Hacim_Numeric', ascending=False).head(20)
+        st.dataframe(df_orig[['Hisse', 'Fiyat', 'Hacim', 'Piyasa Değeri', 'Gün %', 'AI Sinyal']], width='stretch', hide_index=True)
     else:
         st.warning("Veri bekleniyor...")
 
