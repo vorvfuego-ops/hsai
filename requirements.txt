@@ -1,6 +1,7 @@
 streamlit
-tradingview-screener
 yfinance
 pandas
 plotly
 numpy
+requests
+beautifulsoup4
