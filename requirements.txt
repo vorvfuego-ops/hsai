@@ -1,6 +1,7 @@
 streamlit==1.63.0
 pandas
 numpy
-yfinance
-requests
 plotly
+requests
+tradingview-screener
+yfinance
