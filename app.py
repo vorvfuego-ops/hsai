@@ -1,223 +1,374 @@
-import streamlit as st
+# -*- coding: utf-8 -*-
+import sys
+import traceback
+import time
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import numpy as np
+import gradio as gr
 import yfinance as yf
-import requests
+from datetime import datetime
 
-# Sayfa Ayarları
-st.set_page_config(page_title="BIST Pro AI Terminali", layout="wide")
+# Selenium kütüphaneleri
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
-# --- 1. GÜVENLİ VERİ DÖNÜŞTÜRÜCÜ ---
-def safe_float(val):
-    """Pandas verilerini hatasız float'a çevirir."""
-    if val is None: return 0.0
-    if isinstance(val, pd.Series):
-        if val.empty: return 0.0
-        try: return float(val.iloc[0])
-        except: return 0.0
-    try: return float(val)
-    except: return 0.0
+print("0. Uygulama başlatılıyor...")
+sys.stdout.flush()
 
-# --- 2. TRADINGVIEW OTOMATİK TOKEN DOĞRULAMA ---
-def get_auth_token():
-    """Secrets'taki kullanıcı adı/şifre ile TradingView token'ı alır."""
+
+# ============================================================
+# 1. FINTABLES RADAR - YÜKSEK POTANSİYELLİ TAVAN HİSSELERİ
+# ============================================================
+def fintables_radar_veri_cek():
+    """
+    Fintables Radar sayfasından yüksek potansiyelli hisseleri çeker
+    """
     try:
-        username = st.secrets["tradingview"]["username"]
-        password = st.secrets["tradingview"]["password"]
-        sign_in_url = 'https://www.tradingview.com/accounts/signin/'
-        data = {"username": username, "password": password, "remember": "on"}
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.post(url=sign_in_url, data=data, headers=headers)
-        if response.status_code == 200 and 'auth_token' in response.json().get('user', {}):
-            return response.json()['user']['auth_token']
-        else:
-            return None
-    except:
-        return None
-
-# --- 3. TÜM BIST HİSSELERİNİ ÇEKME (TradingView Screener) ---
-@st.cache_data(ttl=600)
-def tum_bist_hisselerini_getir():
-    """Türkiye piyasasındaki tüm hisseleri çeker."""
-    try:
-        from tradingview_screener import Query
-        token = get_auth_token()
-        query = (
-            Query()
-            .set_markets('turkey')
-            .select('name', 'close', 'change', 'volume', 'market_cap_basic',
-                    'RSI', 'sector', 'high_all_calc')
-            .order_by('volume', ascending=False)
-            .limit(1000)
+        print("Fintables Radar verileri çekiliyor...")
+        
+        # Chrome driver'ı başlat
+        options = webdriver.ChromeOptions()
+        options.add_argument('--headless')  # Arka planda çalıştır
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1920,1080')
+        
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options
         )
+        
+        # Sayfayı yükle
+        driver.get("https://fintables.com/radar/hisse-senetleri")
+        time.sleep(5)  # Sayfanın yüklenmesi için bekle
+        
+        # Tablo verilerini çek - sayfa yapısına göre seçicileri ayarla
+        # Not: Fintables sürekli güncellendiği için seçiciler değişebilir
+        # Aşağıdaki seçiciler örnek amaçlıdır, gerçek kullanımda inspect edilmelidir
+        
         try:
-            total, df = query.get_scanner_data(auth_token=token)
-        except:
-            total, df = query.get_scanner_data()
-        return df
+            # Tablo satırlarını bul
+            rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+            
+            veriler = []
+            for row in rows[:20]:  # İlk 20 hisseyi al
+                cols = row.find_elements(By.TAG_NAME, "td")
+                if len(cols) >= 5:
+                    hisse = {
+                        'Sembol': cols[0].text.strip(),
+                        'Fiyat': cols[1].text.strip(),
+                        'Değişim': cols[2].text.strip(),
+                        'Hacim': cols[3].text.strip(),
+                        'Potansiyel': cols[4].text.strip() if len(cols) > 4 else "-"
+                    }
+                    veriler.append(hisse)
+            
+            driver.quit()
+            
+            if veriler:
+                df = pd.DataFrame(veriler)
+                return df
+            else:
+                return pd.DataFrame({"Durum": ["Veri çekilemedi, sayfa yapısı değişmiş olabilir."]})
+                
+        except Exception as e:
+            driver.quit()
+            return pd.DataFrame({"Hata": [f"Veri çekme hatası: {str(e)}"]})
+            
     except Exception as e:
-        return pd.DataFrame()
+        return pd.DataFrame({"Hata": [f"Selenium hatası: {str(e)}. Lütfen Chrome ve ChromeDriver'ın kurulu olduğundan emin olun."]})
 
-# --- 4. TAVAN POTANSİYELİ VE NEDEN AÇIKLAMASI ---
-def potansiyel_hesapla(df):
-    """Tavan Potansiyelini hesaplar ve neden yükselebileceğini Türkçe açıklar."""
-    # Yüksek değerleri hesapla (Yahoo Finance üzerinden 52 haftalık tepe noktalarını baz al)
-    # Çünkü TradingView'un "high_all_calc" değeri bazen 0 dönebiliyor.
-    yuksek_degerler = []
-    
-    for isim in df['name']:
-        try:
-            veri = yf.download(isim + ".IS", period="1y", progress=False, auto_adjust=False)
-            yuksek = safe_float(veri['High'].max()) if not veri.empty else 0
-        except:
-            yuksek = 0
-        yuksek_degerler.append(yuksek)
-    
-    df['52H_Yuksek'] = yuksek_degerler
-    df['Tavan Potansiyeli (%)'] = ((df['52H_Yuksek'] - df['close']) / df['close']) * 100
-    
-    # Neden Yükselebilir? sütunu
-    def neden_yukselebilir(row):
-        nedenler = []
-        if row['RSI'] > 70: nedenler.append("Aşırı alım, güçlü momentum")
-        elif row['RSI'] > 50: nedenler.append("Pozitif alıcı baskısı (RSI)")
-        
-        if row['Tavan Potansiyeli (%)'] > 20: nedenler.append("Tavanına çok uzak, büyük yükseliş alanı var")
-        elif row['Tavan Potansiyeli (%)'] > 5: nedenler.append("52 haftalık zirvesine yaklaşıyor, tavan denemesi beklenebilir")
-        
-        if safe_float(row['change']) > 2: nedenler.append("Bugün güçlü bir yükseliş var")
-        if safe_float(row['volume']) > 1000000: nedenler.append("İşlem hacmi çok yüksek (likidite güçlü)")
-        
-        return ", ".join(nedenler) if nedenler else "Normal piyasa seyri"
-    
-    df['Neden Yükselebilir?'] = df.apply(neden_yukselebilir, axis=1)
-    return df
 
-# --- ARAYÜZ VE SIDEBAR (SOL MENÜ) ---
-st.title("📊 BIST Pro AI Terminali")
-st.caption("TradingView Altyapısı ile Sınırsız Türk Piyasası Analizi")
+# ============================================================
+# 2. TEMEL ANALİZ FONKSİYONU
+# ============================================================
+def temel_analiz(ticker):
+    """
+    Hisse senedinin temel analiz verilerini çeker
+    """
+    try:
+        if not ticker or not ticker.strip():
+            return "⚠️ Lütfen bir hisse sembolü girin."
+        
+        ticker_symbol = ticker.strip().upper()
+        print(f"Temel analiz yapılıyor: {ticker_symbol}")
+        
+        # Yahoo Finance'den temel verileri çek
+        stock = yf.Ticker(ticker_symbol)
+        info = stock.info
+        
+        if not info:
+            return f"❌ '{ticker_symbol}' için veri bulunamadı."
+        
+        # Temel göstergeler
+        sonuc = f"""
+### 📊 Temel Analiz Raporu: {ticker_symbol}
 
-# Tüm hisseleri çek
-with st.spinner("BIST hisseleri yükleniyor..."):
-    tum_hisseler = tum_bist_hisselerini_getir()
+**🏢 Şirket Bilgileri:**
+- Şirket Adı: {info.get('longName', 'Bilgi yok')}
+- Sektör: {info.get('sector', 'Bilgi yok')}
+- Endüstri: {info.get('industry', 'Bilgi yok')}
+- Ülke: {info.get('country', 'Bilgi yok')}
 
-# Sol Menü
-with st.sidebar:
-    st.header("📋 Tüm BIST Hisseleri")
-    if not tum_hisseler.empty:
-        # Sol menüde tüm hisseleri listele
-        secim = st.selectbox("Hisse Ara ve Seç", options=tum_hisseler['name'].tolist())
-        if st.button("Seçilen Hisseleri Analiz Et"):
-            st.session_state['secili_hisse'] = secim
-            st.session_state['aktif_tab'] = 1
-            st.rerun()
-    else:
-        st.warning("Veri çekilemedi. Lütfen Secrets ayarlarını kontrol edin.")
+**💰 Fiyat ve Değerleme:**
+- Güncel Fiyat: ${info.get('currentPrice', info.get('regularMarketPrice', 'Bilgi yok'))}
+- Piyasa Değeri: ${info.get('marketCap', 'Bilgi yok'):,} 
+- F/K Oranı: {info.get('trailingPE', 'Bilgi yok')}
+- Defter Değeri: ${info.get('bookValue', 'Bilgi yok')}
+- F/DD Oranı: {info.get('priceToBook', 'Bilgi yok')}
 
-# Sekmeleri oluştur (0: Tavan Avcıları, 1: Profesyonel Analiz)
-tab1, tab2 = st.tabs(["🚀 Yüksek Potansiyelli Tavan Hisseleri", "📈 Profesyonel Analiz"])
+**📈 Temettü ve Getiri:**
+- Temettü Verimi: %{info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 'Bilgi yok'}
+- Öneri: {info.get('recommendationKey', 'Bilgi yok')}
 
-# --- TAB 1: YÜKSEK POTANSİYELLİ TAVAN HİSSELERİ (10 Hisse) ---
-with tab1:
-    st.subheader("🔥 En Yüksek Tavan Potansiyeline Sahip 10 Hisse")
-    st.write("Bu liste; hacim, RSI ve 52 haftalık zirveye olan mesafeye göre yapay zeka tarafından hesaplanır.")
+**📊 Hedef Fiyat:**
+- Ortalama Hedef: ${info.get('targetMeanPrice', 'Bilgi yok')}
+- En Düşük Hedef: ${info.get('targetLowPrice', 'Bilgi yok')}
+- En Yüksek Hedef: ${info.get('targetHighPrice', 'Bilgi yok')}
+        """
+        return sonuc
+        
+    except Exception as e:
+        return f"❌ Temel analiz hatası: {str(e)}"
+
+
+# ============================================================
+# 3. TEKNİK ANALİZ (MEVCUT)
+# ============================================================
+def analiz_et(ticker, start_date):
+    """
+    Hisse senedi analizi yapar ve teknik göstergeleri hesaplar
+    """
+    print(f"Analiz başladı: {ticker}, {start_date}")
     
-    if not tum_hisseler.empty:
-        # Potansiyel hesaplamalarını yap (10 hisse için Yahoo verileriyle 52H yüksekliği çek)
-        # Not: Bu işlem biraz zaman alabilir, o yüzden 10 hisse ile sınırlandırıyoruz.
-        ilk_10 = tum_hisseler.head(20) # İlk 20'yi alıp en iyi 10'u bulacağız
-        analiz_df = potansiyel_hesapla(ilk_10)
-        
-        # En yüksek potansiyele göre sırala
-        tavan_hisseleri = analiz_df.sort_values(by='Tavan Potansiyeli (%)', ascending=False).head(10)
-        
-        # Türkçe Tablo Oluştur
-        tablo_df = tavan_hisseleri[['name', 'close', 'change', 'volume', 'Tavan Potansiyeli (%)', 'RSI', 'sector', 'Neden Yükselebilir?']].copy()
-        tablo_df.columns = ['Hisse', 'Kapanış', 'Değişim (%)', 'Hacim', 'Tavan Potansiyeli (%)', 'RSI', 'Sektör', 'Neden Yükselebilir?']
-        tablo_df['Kapanış'] = tablo_df['Kapanış'].round(2)
-        tablo_df['Değişim (%)'] = tablo_df['Değişim (%)'].round(2)
-        tablo_df['Tavan Potansiyeli (%)'] = tablo_df['Tavan Potansiyeli (%)'].round(2)
-        tablo_df['RSI'] = tablo_df['RSI'].round(2)
-        
-        st.dataframe(tablo_df, width='stretch', hide_index=True)
-        
-        # PROFESYONEL VE ANLAMLI GRAFİK (Normalize Edilmiş Performans)
-        st.markdown("### 📈 10 Hissenin Kıyaslamalı Performansı")
-        st.caption("Tüm hisseler 100 birimden başlatılarak normalize edilmiştir. Böylece pahalı ve ucuz hisseler aynı grafikte doğru kıyaslanır.")
-        
-        fig = go.Figure()
-        
-        for isim in tavan_hisseleri['name']:
-            try:
-                # 6 aylık veri çek
-                df_hisse = yf.download(isim + ".IS", period="6mo", progress=False, auto_adjust=False)
-                if not df_hisse.empty:
-                    # Normalize et: İlk fiyatı 100 kabul et
-                    df_hisse['Normalize'] = (df_hisse['Close'] / df_hisse['Close'].iloc[0]) * 100
-                    
-                    fig.add_trace(go.Scatter(
-                        x=df_hisse.index,
-                        y=df_hisse['Normalize'],
-                        mode='lines',
-                        name=isim,
-                        line=dict(width=2)
-                    ))
-            except:
-                pass
-        
-        fig.update_layout(
-            title="Son 6 Ay Performansı (100 Baz Puan)",
-            xaxis_title="Tarih",
-            yaxis_title="Performans (%)",
-            height=600,
-            template='plotly_white',
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig, width='stretch')
-    else:
-        st.error("TradingView'dan veri alınamadı.")
-
-# --- TAB 2: PROFESYONEL ANALİZ (Tüm Menüden Seçilebilir) ---
-with tab2:
-    st.subheader("🧠 Profesyonel Analiz")
+    if not ticker or not ticker.strip():
+        return "⚠️ Lütfen bir hisse sembolü girin.", None, None
     
-    # Sol menüden seçilen hisse varsa onu kullan, yoksa varsayılanı kullan
-    if 'secili_hisse' in st.session_state:
-        secim = st.session_state['secili_hisse']
-    else:
-        secim = "GARAN"
+    try:
+        datetime.strptime(start_date, '%Y-%m-%d')
+    except:
+        return "⚠️ Tarih formatı hatalı. Lütfen YYYY-AA-GG formatında girin.", None, None
     
-    # Sadece menüdeki hisseleri seçtir
-    secim = st.selectbox("Analiz Edilecek Hisse", options=tum_hisseler['name'].tolist() if not tum_hisseler.empty else ["GARAN"], index=0, key="analiz_secimi")
-    
-    if st.button("Derinlemesine Analizi Başlat"):
-        df = yf.download(secim + ".IS", period="6mo", progress=False, auto_adjust=False)
+    try:
+        ticker_symbol = ticker.strip().upper()
+        print(f"Veri çekiliyor: {ticker_symbol}")
+        df = yf.download(ticker_symbol, start=start_date, progress=False)
         
         if df.empty:
-            st.error("Bu hisse için veri bulunamadı.")
+            return f"❌ '{ticker_symbol}' sembolüne ait veri bulunamadı.", None, None
+        
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        
+        df['SMA_10'] = df['Close'].rolling(window=10).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        
+        last_close = float(df['Close'].iloc[-1])
+        last_sma10 = float(df['SMA_10'].iloc[-1])
+        last_sma50 = float(df['SMA_50'].iloc[-1])
+        
+        if last_sma10 > last_sma50 and last_close > last_sma10:
+            signal = "🟢 GÜÇLÜ AL"
+            recommendation = "Kısa vadeli trend yukarı yönlü"
         else:
-            # Teknik Göstergeler
-            df['SMA_20'] = df['Close'].rolling(window=20).mean()
-            df['SMA_50'] = df['Close'].rolling(window=50).mean()
+            signal = "🔴 SAT / BEKLE"
+            recommendation = "Piyasada aşağı yönlü baskı var"
+        
+        sonuc_metni = f"""
+### 📊 Teknik Analiz Raporu: {ticker_symbol}
+
+**💰 Fiyat Bilgileri:**
+- Son Kapanış: **${last_close:.2f}**
+- SMA 10: ${last_sma10:.2f}
+- SMA 50: ${last_sma50:.2f}
+
+**🎯 Yapay Zeka Kararı: {signal}**
+- **Öneri:** {recommendation}
+        """
+        
+        df_reset = df.reset_index()
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df_reset['Date'],
+            y=df_reset['Close'],
+            mode='lines',
+            name='Kapanış Fiyatı'
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_reset['Date'],
+            y=df_reset['SMA_10'],
+            mode='lines',
+            name='SMA 10'
+        ))
+        fig.add_trace(go.Scatter(
+            x=df_reset['Date'],
+            y=df_reset['SMA_50'],
+            mode='lines',
+            name='SMA 50'
+        ))
+        
+        fig.update_layout(
+            title=f'{ticker_symbol} Fiyat Grafiği',
+            xaxis_title='Tarih',
+            yaxis_title='Fiyat',
+            height=400
+        )
+        
+        last_10_days = df_reset.tail(10)[['Date', 'Close', 'SMA_10', 'SMA_50']].copy()
+        last_10_days['Close'] = last_10_days['Close'].round(2)
+        last_10_days['SMA_10'] = last_10_days['SMA_10'].round(2)
+        last_10_days['SMA_50'] = last_10_days['SMA_50'].round(2)
+        
+        print("Teknik analiz tamamlandı")
+        return sonuc_metni, fig, last_10_days
+        
+    except Exception as e:
+        print(f"HATA: {traceback.format_exc()}")
+        return f"❌ Hata: {str(e)}", None, None
+
+
+# ============================================================
+# 4. GRADIO ARAYÜZÜ
+# ============================================================
+def create_demo():
+    with gr.Blocks(theme=gr.themes.Soft(), title="AI Hisse Analiz Sistemi") as demo:
+        gr.Markdown("# 📈 AI Destekli Hisse Analiz Sistemi")
+        
+        # ===== MENÜ SEKMELERİ =====
+        with gr.Tabs():
             
-            # Profesyonel 3 Satırlı Grafik
-            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.6, 0.2, 0.2])
+            # ----- SEKME 1: TEKNİK ANALİZ (MEVCUT) -----
+            with gr.TabItem("📊 Teknik Analiz"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        ticker_input = gr.Textbox(
+                            label="Hisse Sembolü",
+                            value="AAPL",
+                            placeholder="Örn: AAPL, THYAO.IS"
+                        )
+                        date_input = gr.Textbox(
+                            label="Başlangıç Tarihi",
+                            value="2022-01-01",
+                            placeholder="YYYY-AA-GG"
+                        )
+                        analiz_btn = gr.Button("🚀 Analizi Başlat", variant="primary")
+                    
+                    with gr.Column(scale=2):
+                        output_text = gr.Markdown(label="📊 Analiz Sonuçları")
+                
+                with gr.Row():
+                    output_plot = gr.Plot(label="📈 Fiyat Grafiği")
+                
+                with gr.Row():
+                    output_table = gr.Dataframe(label="📊 Son 10 Gün Verileri")
+                
+                analiz_btn.click(
+                    fn=analiz_et,
+                    inputs=[ticker_input, date_input],
+                    outputs=[output_text, output_plot, output_table]
+                )
+                
+                ticker_input.submit(
+                    fn=analiz_et,
+                    inputs=[ticker_input, date_input],
+                    outputs=[output_text, output_plot, output_table]
+                )
             
-            fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Fiyat'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_20'], name='SMA 20', line=dict(color='blue')), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df.index, y=df['SMA_50'], name='SMA 50', line=dict(color='orange')), row=1, col=1)
+            # ----- SEKME 2: YÜKSEK POTANSİYELLİ TAVAN HİSSELERİ -----
+            with gr.TabItem("🚀 Yüksek Potansiyelli Tavan Hisseleri"):
+                gr.Markdown("### 📋 Fintables Radar - Yüksek Potansiyelli Hisseler")
+                gr.Markdown("*Not: Veriler Fintables.com'dan çekilmektedir. Sayfa yapısı değişirse veri çekme işlemi etkilenebilir.*")
+                
+                with gr.Row():
+                    radar_btn = gr.Button("🔄 Radar Verilerini Getir", variant="primary")
+                
+                with gr.Row():
+                    radar_output = gr.Dataframe(label="📊 Yüksek Potansiyelli Hisseler")
+                
+                radar_btn.click(
+                    fn=fintables_radar_veri_cek,
+                    inputs=[],
+                    outputs=[radar_output]
+                )
             
-            fig.add_trace(go.Bar(x=df.index, y=df['Volume'], name='Hacim', marker_color='gray'), row=2, col=1)
+            # ----- SEKME 3: TEMEL ANALİZ -----
+            with gr.TabItem("🏢 Temel Analiz"):
+                gr.Markdown("### 📊 Temel Analiz - Şirket Finansal Verileri")
+                
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        temel_ticker = gr.Textbox(
+                            label="Hisse Sembolü",
+                            value="AAPL",
+                            placeholder="Örn: AAPL, THYAO.IS"
+                        )
+                        temel_btn = gr.Button("📊 Temel Analizi Getir", variant="primary")
+                    
+                    with gr.Column(scale=2):
+                        temel_output = gr.Markdown(label="📊 Temel Analiz Sonuçları")
+                
+                temel_btn.click(
+                    fn=temel_analiz,
+                    inputs=[temel_ticker],
+                    outputs=[temel_output]
+                )
+                
+                temel_ticker.submit(
+                    fn=temel_analiz,
+                    inputs=[temel_ticker],
+                    outputs=[temel_output]
+                )
             
-            # RSI Hesabı
-            delta = df['Close'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            rsi = 100 - (100 / (1 + rs))
-            fig.add_trace(go.Scatter(x=df.index, y=rsi, name='RSI', line=dict(color='purple')), row=3, col=1)
-            
-            fig.update_layout(title=f"{secim} Profesyonel Görünüm", height=800, template='plotly_dark', legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-            st.plotly_chart(fig, width='stretch')
+            # ----- SEKME 4: GENEL SİSTEM VERİLERİ -----
+            with gr.TabItem("🌐 Genel Sistem Verileri"):
+                gr.Markdown("### 📈 Fintables - Hisse Senedi Radar Sayfası")
+                gr.Markdown("*Aşağıda Fintables.com hisse senedi radar sayfası görüntülenmektedir.*")
+                
+                # Iframe ile sayfayı göster
+                gr.HTML("""
+                <iframe 
+                    src="https://fintables.com/radar/hisse-senetleri" 
+                    style="width:100%; height:700px; border:1px solid #ccc; border-radius:8px;"
+                    sandbox="allow-scripts allow-same-origin allow-forms"
+                    loading="lazy"
+                ></iframe>
+                """)
+    
+    return demo
+
+
+# ============================================================
+# ANA ÇALIŞTIRMA BLOĞU
+# ============================================================
+if __name__ == "__main__":
+    print("="*50)
+    print("AI Hisse Analiz Sistemi Başlatılıyor...")
+    print("="*50)
+    
+    try:
+        print("Arayüz oluşturuluyor...")
+        demo = create_demo()
+        print("Arayüz hazır, tarayıcı açılıyor...")
+        print("Adres: http://127.0.0.1:7860")
+        print("Kapatmak için CTRL+C tuşlarına basın")
+        
+        demo.launch(
+            server_name="127.0.0.1",
+            server_port=7860,
+            share=False,
+            debug=False,
+            show_error=True,
+            prevent_thread_lock=False
+        )
+        
+    except Exception as e:
+        print(f"KRİTİK HATA: {e}")
+        print(traceback.format_exc())
+        input("Devam etmek için ENTER'a basın...")
