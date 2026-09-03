@@ -7,7 +7,7 @@ from streamlit_autorefresh import st_autorefresh
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime
-import hashlib  # DETERMİNİSTİK SEED İÇİN EKLENDİ
+import hashlib
 
 warnings.filterwarnings("ignore")
 
@@ -218,17 +218,16 @@ def hesapla_ai_verileri(df):
     else:
         backtest_skoru = 0
 
-    # Monte Carlo Simülasyonu (HATA DÜZELTİLDİ - Deterministik Seed)
+    # Monte Carlo Simülasyonu
     def monte_carlo_olasilik(row):
         fiyat = safe_float(row['Fiyat'])
         gunluk_degisim = abs(safe_float(row['Gün %'])) / 100
         volatilite = max(gunluk_degisim, 0.01)
         
-        # Aynı gün içinde hisse bazlı tutarlı skor üretmek için string'i deterministik int'e çevir
         hisse = row['Hisse']
         bugun = datetime.now().date()
         seed_str = f"{hisse}-{bugun}"
-        seed_int = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)  # 32-bit integer
+        seed_int = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
         
         np.random.seed(seed_int)
         
@@ -346,7 +345,7 @@ if not analizli_df.empty:
                 send_telegram_alert(mesaj)
                 st.session_state['bildirilen_hisseler'].append(hisse)
 
-# --- SOL MENÜ VE DİĞER SEKMELER (Aynen Korundu) ---
+# --- SOL MENÜ VE DİĞER SEKMELER ---
 with st.sidebar:
     st.header("📋 Keşfet")
     if st.button("🔍 Radar", use_container_width=True): st.session_state['menu'] = "Radar"
@@ -425,15 +424,60 @@ st.markdown("---")
 
 if menu_secim == "Temel Analiz":
     st.subheader("📈 Profesyonel Temel Analiz")
+    
+    # Makro Veriler
     macro = get_macro_data()
-    st.write(f"**Enflasyon:** %{macro['enflasyon']} | **Faiz:** %{macro['faiz']} | **Büyüme:** %{macro['buyume']} | **CDS:** {macro['cds']}")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Enflasyon", f"%{macro['enflasyon']}")
+    col2.metric("Faiz", f"%{macro['faiz']}")
+    col3.metric("Büyüme", f"%{macro['buyume']}")
+    col4.metric("CDS", macro['cds'])
+    
+    st.markdown("---")
+    
+    # Hisse Bazında Temel Veriler
+    st.subheader("📊 Hisse Bazında Temel Analiz Verileri")
     if not analizli_df.empty:
-        ort_fk = pd.to_numeric(analizli_df['F/K'], errors='coerce').mean()
-        st.markdown("### 🎯 2026 Senaryo Analizi")
-        col1, col2, col3 = st.columns(3)
-        with col1: st.success("**BOĞA** (F/K artar)")
-        with col2: st.info("**BAZ** (F/K sabit)")
-        with col3: st.error("**AYI** (F/K düşer)")
+        temel_cols = ['Hisse', 'Fiyat', 'Piyasa Değeri', 'F/K', 'PD/DD', 
+                      'ROE', 'Net Marj', 'Borç/Özkaynak', 'Temettü Verimi', 
+                      'Sektörel Değerleme', 'Yatırım Fırsat Skoru', 'AI Sinyal']
+        df_temel = analizli_df[temel_cols].copy()
+        
+        # Sayısal sütunları formatla
+        for col in ['F/K', 'PD/DD', 'ROE', 'Net Marj', 'Borç/Özkaynak', 'Temettü Verimi']:
+            df_temel[col] = df_temel[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+        
+        st.dataframe(df_temel, use_container_width=True, hide_index=True)
+        
+        # Detaylı Analiz İçin Hisse Seçimi
+        st.markdown("---")
+        st.subheader("🔍 Detaylı Hisse Analizi")
+        secilen_hisse = st.selectbox("Bir Hisse Seçin", options=analizli_df['Hisse'].tolist(), key="temel_detay")
+        
+        if secilen_hisse:
+            detay = analizli_df[analizli_df['Hisse'] == secilen_hisse].iloc[0]
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"### 📌 {secilen_hisse}")
+                st.write(f"**Fiyat:** {detay['Fiyat']}")
+                st.write(f"**Günlük Değişim:** {detay['Gün %']}")
+                st.write(f"**Piyasa Değeri:** {detay['Piyasa Değeri']}")
+                st.write(f"**Hacim (TL):** {detay['Hacim']}")
+                st.write(f"**52 Hafta Yüksek:** {detay.get('52H_Yuksek', 'N/A')}")
+                st.write(f"**RSI:** {detay['RSI']:.2f}" if pd.notna(detay['RSI']) else "**RSI:** N/A")
+            
+            with col2:
+                st.markdown(f"### 📊 Temel Göstergeler")
+                st.write(f"**F/K:** {detay['F/K']:.2f}" if pd.notna(detay['F/K']) else "**F/K:** N/A")
+                st.write(f"**PD/DD:** {detay['PD/DD']:.2f}" if pd.notna(detay['PD/DD']) else "**PD/DD:** N/A")
+                st.write(f"**ROE:** {detay['ROE']:.2f}%" if pd.notna(detay['ROE']) else "**ROE:** N/A")
+                st.write(f"**Net Marj:** {detay['Net Marj']:.2f}%" if pd.notna(detay['Net Marj']) else "**Net Marj:** N/A")
+                st.write(f"**Borç/Özkaynak:** {detay['Borç/Özkaynak']:.2f}" if pd.notna(detay['Borç/Özkaynak']) else "**Borç/Özkaynak:** N/A")
+                st.write(f"**Temettü Verimi:** {detay['Temettü Verimi']:.2f}%" if pd.notna(detay['Temettü Verimi']) else "**Temettü Verimi:** N/A")
+                st.write(f"**Sektörel Değerleme:** {detay['Sektörel Değerleme']}")
+                st.write(f"**AI Sinyal:** {detay['AI Sinyal']}")
+                st.write(f"**Yatırım Fırsat Skoru:** {detay['Yatırım Fırsat Skoru']}")
 
 elif menu_secim == "Grafik Analizi":
     st.subheader("📈 Çoklu Hisse Grafik Analizi")
