@@ -52,7 +52,7 @@ def tum_bist_hisselerini_getir():
             "name", "close", "change", "volume", "market_cap_basic", 
             "high_all_calc", "RSI", 
             "Perf.W", "Perf.1M", "Perf.3M", "Perf.6M", "Perf.YTD", 
-            "Perf.1Y", "Perf.3Y", "Perf.5Y", "sector"  # Sektör eklendi
+            "Perf.1Y", "Perf.3Y", "Perf.5Y", "sector"
         ]
     }
     
@@ -85,7 +85,7 @@ def tum_bist_hisselerini_getir():
                 "Getiri % (Son 1 yıl)": d[12],
                 "Getiri % (Son 3 yıl)": d[13],
                 "Getiri % (Son 5 yıl)": d[14],
-                "Sektör": d[15]  # Sektör verisi
+                "Sektör": d[15]
             })
         
         df = pd.DataFrame(rows)
@@ -264,7 +264,6 @@ with tab1:
     else:
         st.error("Veri yüklenemedi.")
 
-# Diğer sekmeler (Aynen korundu)
 with tab2:
     st.subheader("💎 Değerleme")
     if not analizli_df.empty:
@@ -305,28 +304,37 @@ with tab8:
 st.markdown("---")
 
 if menu_secim == "Temel Analiz":
-    st.subheader("📈 Temel Analiz Aşamaları")
+    st.subheader("📈 Temel Analiz")
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.info("**Makroekonomi**\n\nÜlke ekonomisi, faiz ve enflasyon incelenir.\n\n*AI:* Enflasyon yüksek seyrediyor, faiz politikaları sıkı.")
-    with col2:
-        st.info("**Sektör Analizi**\n\nŞirketin bulunduğu sektörün büyüme potansiyeline bakılır.\n\n*AI:* Teknoloji ve savunma sanayi öne çıkıyor.")
-    with col3:
-        st.info("**Şirket Analizi**\n\nBilanço ve gelir tablosu kontrol edilir.\n\n*AI:* Borçluluk oranları düşük.")
+    st.markdown("""
+    Temel analiz, bir şirketin finansal verilerini ve ekonomik koşulları inceleyerek hisse senedinin gerçek (adil) değerini bulma yöntemidir.
+    """)
     
-    # --- YENİ: SEKTÖREL ANALİZ (Sektör verisi artık çekiliyor) ---
+    st.markdown("### 💡 Temel Analizin Amaçları ve Kapsamı")
+    st.markdown("""
+    - Hisse senedinin ucuz veya pahalı olduğunu anlamak.
+    - Şirketin kârlılığını ve büyüme potansiyelini ölçmek.
+    - Orta ve uzun vadeli yatırım kararları almak.
+    """)
+    
+    st.markdown("### 📊 İncelenen Temel Unsurlar")
+    st.markdown("""
+    - **Makroekonomi:** Enflasyon, faiz oranları ve genel ekonomik durum.
+    - **Sektör Analizi:** Şirketin bulunduğu sektörün rekabet gücü ve geleceği.
+    - **Şirket Finansalları:** Bilanço, gelir tablosu ve nakit akış raporları.
+    - **Rasyo Oranları:** F/K (Fiyat/Kazanç) ve PD/DD (Piyasa Değeri/Defter Değeri) gibi oranlar.
+    """)
+    
+    # Dinamik Sektör Analizi (Verilerden)
     if not analizli_df.empty and 'Sektör' in analizli_df.columns:
-        st.subheader("📊 Sektör Bazlı Ortalama Getiri")
+        st.markdown("### 🏭 Sektör Analizi (Canlı Verilerle)")
         
-        # Sektörlere göre gruplama ve ortalama getiri hesaplama
         sektor_df = analizli_df.copy()
-        # Getiri yüzdelerini sayıya çevir (formatlı oldukları için)
+        # Yüzdeleri sayıya çevir
         for col in ['Gün %', 'Getiri % (Son 1 hafta)', 'Getiri % (Son 1 ay)', 'Getiri % (Son 1 yıl)']:
             if col in sektor_df.columns:
                 sektor_df[col] = pd.to_numeric(sektor_df[col].astype(str).str.replace('%', ''), errors='coerce')
         
-        # Ortalama getirileri hesapla
         sektor_ozet = sektor_df.groupby('Sektör').agg({
             'Hisse': 'count',
             'Gün %': 'mean',
@@ -335,14 +343,13 @@ if menu_secim == "Temel Analiz":
             'Getiri % (Son 1 yıl)': 'mean'
         }).rename(columns={'Hisse': 'Hisse Sayısı'})
         
-        # Formatlama
         for col in ['Gün %', 'Getiri % (Son 1 hafta)', 'Getiri % (Son 1 ay)', 'Getiri % (Son 1 yıl)']:
             if col in sektor_ozet.columns:
                 sektor_ozet[col] = sektor_ozet[col].round(2).apply(lambda x: f"%{x}")
         
         st.dataframe(sektor_ozet, width='stretch', hide_index=True)
         
-        st.subheader("🏭 Sektörlere Göre Hisse Dağılımı")
+        st.subheader("Sektörlere Göre Hisse Dağılımı")
         st.dataframe(sektor_df[['Hisse', 'Sektör', 'Fiyat', 'Gün %']].sort_values(by='Sektör'), width='stretch', hide_index=True)
 
 elif menu_secim == "Detaylı Analiz":
