@@ -6,7 +6,8 @@ import warnings
 from streamlit_autorefresh import st_autorefresh
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime  # Piyasa saati için eklendi
+from datetime import datetime
+import hashlib  # DETERMİNİSTİK SEED İÇİN EKLENDİ
 
 warnings.filterwarnings("ignore")
 
@@ -217,16 +218,19 @@ def hesapla_ai_verileri(df):
     else:
         backtest_skoru = 0
 
-    # Monte Carlo Simülasyonu (Deterministik Seed Eklendi)
+    # Monte Carlo Simülasyonu (HATA DÜZELTİLDİ - Deterministik Seed)
     def monte_carlo_olasilik(row):
         fiyat = safe_float(row['Fiyat'])
         gunluk_degisim = abs(safe_float(row['Gün %'])) / 100
         volatilite = max(gunluk_degisim, 0.01)
         
-        # Aynı gün içinde hisse bazlı tutarlı skor üretmek için seed kullan
+        # Aynı gün içinde hisse bazlı tutarlı skor üretmek için string'i deterministik int'e çevir
         hisse = row['Hisse']
         bugun = datetime.now().date()
-        np.random.seed(f"{hisse}-{bugun}")
+        seed_str = f"{hisse}-{bugun}"
+        seed_int = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)  # 32-bit integer
+        
+        np.random.seed(seed_int)
         
         fiyat_5_gun = fiyat * np.exp((0 * 5) + (volatilite * np.sqrt(5) * np.random.randn(10000)))
         olasilik = np.mean(fiyat_5_gun >= fiyat * 1.10) * 100
@@ -259,7 +263,7 @@ def hesapla_ai_verileri(df):
         
         return max(0, min(100, skor))
     
-    df['Yatırım Fırsat Skoru'] = df.apply(hesapla_skor, axis=1).round(1) # Yuvarlama eklendi
+    df['Yatırım Fırsat Skoru'] = df.apply(hesapla_skor, axis=1).round(1)
     
     def sinyal_uret(row):
         skor = safe_float(row['Yatırım Fırsat Skoru'])
@@ -312,16 +316,13 @@ with st.spinner("Quantum YZ çalışıyor..."):
 
 # --- PİYASA SAATİ KONTROLÜ VE TELEGRAM BİLDİRİMİ ---
 if not analizli_df.empty:
-    # Piyasa Açık mı? (Hafta içi 09:00 - 18:00)
     now = datetime.now()
     piyasa_acik = (now.weekday() < 5) and (now.hour >= 9 and now.hour < 18)
     
-    # Günlük Sıfırlama Kontrolü
     if 'bildirilen_tarih' not in st.session_state or st.session_state['bildirilen_tarih'] != str(now.date()):
         st.session_state['bildirilen_hisseler'] = []
         st.session_state['bildirilen_tarih'] = str(now.date())
 
-    # TEST BUTONU (Heryerde çalışır)
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔔 Telegram Testi")
     if st.sidebar.button("Test Bildirimi Gönder", key="telegram_test_btn"):
@@ -329,14 +330,12 @@ if not analizli_df.empty:
         send_telegram_alert(test_mesaji)
         st.sidebar.success("Test mesajı gönderildi. Telegram'ı kontrol edin.")
 
-    # Otomatik Bildirim (Sadece piyasa açıkken, eşik 75 ve %15)
     if piyasa_acik:
         bildirim_listesi = analizli_df[(analizli_df['Yatırım Fırsat Skoru'] >= 75) & (analizli_df['Monte Carlo Olasılığı (%)'].astype(str).str.replace('%', '').astype(float) > 15)]
         
         for _, row in bildirim_listesi.iterrows():
             hisse = row['Hisse']
             if hisse not in st.session_state['bildirilen_hisseler']:
-                # Mesaj formatı iyileştirildi
                 mesaj = f"🚀 <b>Kuantum Alarmı!</b>\n\n"
                 mesaj += f"📈 Hisse: <b>{hisse}</b>\n"
                 mesaj += f"💰 Fiyat: {row['Fiyat']}\n"
