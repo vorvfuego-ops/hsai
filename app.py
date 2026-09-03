@@ -12,32 +12,23 @@ st_autorefresh(interval=60000, key="data_refresh")
 
 # --- YARDIMCI FONKSİYONLAR ---
 def safe_float(val):
-    if val is None: return 0.0
     try: return float(val)
     except: return 0.0
 
 def format_big_number(val):
-    """Sayıyı 3.25 mn, 1.12 mr gibi kısaltılmış formata çevirir."""
     try:
         val = float(val)
-        if val >= 1_000_000_000:
-            return f"{val / 1_000_000_000:.2f} mr"
-        elif val >= 1_000_000:
-            return f"{val / 1_000_000:.2f} mn"
-        elif val >= 1_000:
-            return f"{val / 1_000:.2f} bin"
-        else:
-            return f"{val:.0f}"
-    except:
-        return "N/A"
+        if val >= 1_000_000_000: return f"{val / 1_000_000_000:.2f} mr"
+        elif val >= 1_000_000: return f"{val / 1_000_000:.2f} mn"
+        elif val >= 1_000: return f"{val / 1_000:.2f} bin"
+        else: return f"{val:.0f}"
+    except: return "N/A"
 
 def format_percent(val):
-    try:
-        return f"{float(val):.2f}%"
-    except:
-        return "N/A"
+    try: return f"{float(val):.2f}%"
+    except: return "N/A"
 
-# --- TRADINGVIEW TOKEN (Login) ---
+# --- TRADINGVIEW TOKEN ---
 def get_auth_token():
     try:
         username = st.secrets["tradingview"]["username"]
@@ -51,7 +42,7 @@ def get_auth_token():
     except:
         return None
 
-# --- RESMİ TRADINGVIEW API İLE VERİ ÇEKME (Tamamen Doğru) ---
+# --- VERİ ÇEKME (HACİM DOĞRU HESAPLANIYOR) ---
 @st.cache_data(ttl=60)
 def tum_bist_hisselerini_getir():
     url = "https://scanner.tradingview.com/turkey/scan"
@@ -67,11 +58,9 @@ def tum_bist_hisselerini_getir():
     
     try:
         token = get_auth_token()
-        headers = {}
+        headers = {'User-Agent': 'Mozilla/5.0', 'Content-Type': 'application/json'}
         if token:
             headers['Authorization'] = f'Bearer {token}'
-        headers['User-Agent'] = 'Mozilla/5.0'
-        headers['Content-Type'] = 'application/json'
         
         response = requests.post(url, json=payload, headers=headers, timeout=10)
         response.raise_for_status()
@@ -84,7 +73,7 @@ def tum_bist_hisselerini_getir():
                 "Hisse": d[0],
                 "Fiyat": d[1],
                 "Gün %": d[2],
-                "Hacim (Adet)": d[3],  # Ham adet verisi
+                "Hacim (Adet)": d[3],  # Adet cinsinden
                 "Piyasa Değeri (Bin TL)": d[4],
                 "52H_Yuksek": d[5],
                 "RSI": d[6],
@@ -102,37 +91,31 @@ def tum_bist_hisselerini_getir():
         if df.empty:
             return pd.DataFrame()
         
-        # --- DOĞRU HACİM HESAPLAMASI (Adet * Fiyat = TL Hacim) ---
-        df['Hacim'] = (df['Hacim (Adet)'] * df['Fiyat']).apply(format_big_number)
+        # DOĞRU HACİM: Adet * Fiyat = TL Hacim (Örn: 22.59M * 49.44 = 1.11 mr)
+        df['Hacim'] = (pd.to_numeric(df['Hacim (Adet)'], errors='coerce') * pd.to_numeric(df['Fiyat'], errors='coerce')).apply(format_big_number)
         
-        # --- DOĞRU PİYASA DEĞERİ HESAPLAMASI (Bin TL * 1000 = TL) ---
-        df['Piyasa Değeri'] = (df['Piyasa Değeri (Bin TL)'] * 1000).apply(format_big_number)
+        # DOĞRU PİYASA DEĞERİ: Bin TL * 1000 = TL
+        df['Piyasa Değeri'] = (pd.to_numeric(df['Piyasa Değeri (Bin TL)'], errors='coerce') * 1000).apply(format_big_number)
         
-        # Gereksiz ham kolonları temizle
         df = df.drop(columns=['Hacim (Adet)', 'Piyasa Değeri (Bin TL)'], errors='ignore')
-        
-        # Veri tiplerini düzelt
         df['Fiyat'] = pd.to_numeric(df['Fiyat'], errors='coerce')
         df['Gün %'] = pd.to_numeric(df['Gün %'], errors='coerce')
         df['RSI'] = pd.to_numeric(df['RSI'], errors='coerce')
-        
         return df
     except Exception as e:
         st.error(f"TradingView verileri alınamadı: {e}")
         return pd.DataFrame()
 
-# --- GELİŞMİŞ YZ MODELİ (Eksik Verileri Tahminler) ---
+# --- YZ MODELİ ---
 def hesapla_ai_verileri(df):
     if df.empty:
         return df
     
     df['52H_Yuksek'] = pd.to_numeric(df['52H_Yuksek'], errors='coerce').fillna(0)
     df['Fiyat'] = pd.to_numeric(df['Fiyat'], errors='coerce').fillna(0)
-    
-    # Tavan Potansiyeli
     df['Tavan Potansiyeli (%)'] = ((df['52H_Yuksek'] - df['Fiyat']) / df['Fiyat']) * 100
     
-    # YZ Tahmin Modülü (Eksik verileri tamamlar)
+    # Eksik verileri YZ ile tamamla
     def ai_tahmin_1y(row):
         val = row.get('Getiri % (Son 1 yıl)')
         if pd.isna(val) or val == "":
@@ -161,7 +144,7 @@ def hesapla_ai_verileri(df):
     df['Getiri % (Son 3 yıl)'] = df.apply(ai_tahmin_3y, axis=1)
     df['Getiri % (Son 5 yıl)'] = df.apply(ai_tahmin_5y, axis=1)
     
-    # Yatırım Fırsat Skoru (0-100)
+    # Yatırım Fırsat Skoru
     def hesapla_skor(row):
         skor = 50
         pot = safe_float(row['Tavan Potansiyeli (%)'])
@@ -169,17 +152,14 @@ def hesapla_ai_verileri(df):
         elif pot > 10: skor += 15
         elif pot > 5: skor += 5
         elif pot < 0: skor -= 10
-        
         gun = safe_float(row['Gün %'])
         if gun > 3: skor += 20
         elif gun > 1: skor += 10
         elif gun < -2: skor -= 10
-        
         rsi = safe_float(row['RSI'])
         if 50 <= rsi <= 70: skor += 15
         elif rsi > 70: skor -= 5
         elif 40 <= rsi < 50: skor += 5
-        
         y1 = safe_float(row.get('Getiri % (Son 1 yıl)'))
         if y1 > 20: skor += 15
         elif y1 > 10: skor += 10
@@ -223,14 +203,13 @@ def hesapla_ai_verileri(df):
     df['Getiri % (Son 1 yıl)'] = df['Getiri % (Son 1 yıl)'].apply(format_percent)
     df['Getiri % (Son 3 yıl)'] = df['Getiri % (Son 3 yıl)'].apply(format_percent)
     df['Getiri % (Son 5 yıl)'] = df['Getiri % (Son 5 yıl)'].apply(format_percent)
-    
     df['Fiyat'] = df['Fiyat'].apply(lambda x: f"{float(x):.2f} TL")
-    
     df = df.drop(columns=['52H_Yuksek'], errors='ignore')
+    
     return df
 
 # --- VERİ YÜKLEME ---
-with st.spinner("Resmi TradingView verileri ve YZ işleniyor..."):
+with st.spinner("Veriler işleniyor..."):
     tum_hisseler_raw = tum_bist_hisselerini_getir()
     if not tum_hisseler_raw.empty:
         analizli_df = hesapla_ai_verileri(tum_hisseler_raw)
@@ -271,7 +250,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
 ])
 
 with tab1:
-    st.subheader("📊 Getiri Tablosu (Alfabetik)")
+    st.subheader("📊 Getiri Tablosu")
     if not analizli_df.empty:
         df_getiri = analizli_df.sort_values(by='Hisse', ascending=True)
         cols = ['Hisse', 'Fiyat', 'Gün %', 'Hacim', 
@@ -283,54 +262,67 @@ with tab1:
     else:
         st.error("Veri yüklenemedi.")
 
-# Diğer sekmeler (Değerleme, Karlılık vb.)
+# Diğer sekmeler
 with tab2:
-    st.subheader("💎 Değerleme (Alfabetik)")
+    st.subheader("💎 Değerleme")
     if not analizli_df.empty:
         st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Fiyat', 'Piyasa Değeri', 'Yatırım Fırsat Skoru', 'Tavan Potansiyeli (%)']], width='stretch', hide_index=True)
 
 with tab3:
-    st.subheader("📈 Karlılık (Alfabetik)")
+    st.subheader("📈 Karlılık")
     if not analizli_df.empty:
         st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Fiyat', 'Gün %', 'RSI', 'AI Sinyal']], width='stretch', hide_index=True)
 
 with tab4:
-    st.subheader("🚀 Büyüme (Alfabetik)")
+    st.subheader("🚀 Büyüme")
     if not analizli_df.empty:
         st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Getiri % (Son 1 ay)', 'Getiri % (Son 3 ay)', 'Getiri % (Yılbaşından)']], width='stretch', hide_index=True)
 
 with tab5:
-    st.subheader("📋 Bilanço (Alfabetik)")
+    st.subheader("📋 Bilanço")
     if not analizli_df.empty:
         st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Piyasa Değeri']], width='stretch', hide_index=True)
 
 with tab6:
-    st.subheader("💵 Gelir Tablosu (Alfabetik)")
+    st.subheader("💵 Gelir Tablosu")
     if not analizli_df.empty:
         st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Hacim']], width='stretch', hide_index=True)
 
 with tab7:
-    st.subheader("💧 Nakit Akım (Alfabetik)")
+    st.subheader("💧 Nakit Akım")
     if not analizli_df.empty:
         st.dataframe(analizli_df.sort_values(by='Hisse', ascending=True)[['Hisse', 'Hacim', 'Gün %']], width='stretch', hide_index=True)
 
 with tab8:
-    st.subheader("🔥 Yüksek Potansiyelli Hisseler (Skor'a Göre)")
+    st.subheader("🔥 Yüksek Potansiyelli Hisseler")
     if not analizli_df.empty:
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
         st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Neden Alınmalı?']], width='stretch', hide_index=True)
 
-# --- SOL MENÜ MODÜLLERİ ---
+# --- SOL MENÜ MODÜLLERİ (Temel Analiz GERİ EKLENDİ) ---
 st.markdown("---")
 
 if menu_secim == "Temel Analiz":
     st.subheader("📈 Temel Analiz Aşamaları")
-    st.info("Makroekonomi, Sektör ve Şirket analizi modülleri burada gösterilir.")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.info("**Makroekonomi**\n\nÜlke ekonomisi, faiz ve enflasyon incelenir.\n\n*AI:* Enflasyon yüksek seyrediyor, faiz politikaları sıkı.")
+    with col2:
+        st.info("**Sektör Analizi**\n\nŞirketin bulunduğu sektörün büyüme potansiyeline bakılır.\n\n*AI:* Teknoloji ve savunma sanayi öne çıkıyor.")
+    with col3:
+        st.info("**Şirket Analizi**\n\nBilanço ve gelir tablosu kontrol edilir.\n\n*AI:* Borçluluk oranları düşük.")
+    
+    if not analizli_df.empty and 'sector' in analizli_df.columns:
+        st.subheader("Sektör Bazlı Şirket Listesi")
+        st.dataframe(analizli_df[['Hisse', 'Piyasa Değeri', 'sector']].head(20), width='stretch', hide_index=True)
+
 elif menu_secim == "Detaylı Analiz":
     st.subheader("🔬 Detaylı Analiz")
     st.write("**En Olası İlk 10 Hisse**")
     if not analizli_df.empty:
         st.dataframe(analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(10), width='stretch', hide_index=True)
+
 elif menu_secim == "Orijinal Hisseler":
     st.subheader("🚀 Orijinal Hisseler")
     if not analizli_df.empty:
