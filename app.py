@@ -1,77 +1,173 @@
 import streamlit as st
 import pandas as pd
-import requests
-from datetime import datetime
 import yfinance as yf
+import numpy as np
+from datetime import datetime, timedelta
+import time
+import requests
 
-# Sayfa ayarları
+# --- SAYFA AYARLARI ---
 st.set_page_config(
     page_title="AI Destekli Hisse Analiz Sistemi",
     page_icon="📈",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# -----------------------------------------------------------------------------
-# Fintables Veri Çekme Fonksiyonu
-# -----------------------------------------------------------------------------
-# NOT: Fintables API'si genellikle oturum (cookie) gerektirir.
-# Bu yüzden önce kendi API adresini dener, olmazsa manuel (örnek) veriyi gösterir.
-# Gerçek veriyi almak için F12 -> Network sekmesinden isteği kopyalayıp aşağıdaki
-# FINTABLES_API_URL değişkenine yapıştırmanız yeterlidir.
-FINTABLES_API_URL = "https://api.fintables.com/radar"
-
-@st.cache_data(ttl=300) # 5 dakika boyunca veriyi önbellekte tutar
-def fintables_veri_cek():
-    try:
-        response = requests.get(FINTABLES_API_URL, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            if isinstance(data, list):
-                return pd.DataFrame(data)
-            elif isinstance(data, dict) and "data" in data:
-                return pd.DataFrame(data["data"])
-    except Exception:
-        pass # API'ye ulaşılamazsa aşağıdaki örnek veriyi kullan
-
-    # API'ye bağlanılamadığında gösterilecek yedek (örnek) veri seti
-    # (Buradaki sayılar string olarak yazılmıştır, hata vermez)
-    yedek_veri = {
-        "Hisse": ["A1CAP", "A1YEN", "AAGYO", "ACSEL", "ADEL", "ADESE", "ADGYO", "AEFES", "AFYON", "AGESA"],
-        "Fiyat": ["9,55", "2,63", "12,11", "113,30", "31,78", "8,84", "57,55", "18,08", "12,47", "257,25"],
-        "Gün %": ["-1,95", "-0,75", "-1,46", "-0,87", "-0,63", "-1,18", "-1,96", "-0,50", "-0,09", "-1,86"],
-        "Hacim": ["8,61", "5,19", "23,05", "2,16", "21,57", "16,87", "8,73", "146,26", "1,36", "2,79"],
-        "Getiri % (Son 1 hafta)": ["-10,44", "-6,41", "-7,56", "-5,82", "-13,81", "-2,33", "-5,27", "-4,34", "-1,66", "2,18"],
-        "Getiri % (Son 1 ay)": ["-14,01", "-0,38", "-6,41", "-8,78", "-9,88", "-3,45", "-18,61", "-17,37", "-2,88", "-5,91"],
-        "Getiri % (Son 3 ay)": ["-27,12", "-25,71", "-31,05", "-34,39", "-4,00", "-28,00", "-6,38", "-10,41", "-6,55", "-20,79"],
-        "Getiri % (Son 6 ay)": ["-56,48", "-2,10", "N/A", "-12,18", "-1,67", "-17,65", "-30,85", "-16,85", "-5,68", "-20,68"],
-        "Getiri % (Yılbaşından bugüne)": ["-36,82", "-0,72", "N/A", "-15,97", "-3,94", "-4,74", "-33,72", "-30,05", "-0,20", "-65,49"],
-        "Getiri % (Son 1 yıl)": ["-28,61", "-12,92", "N/A", "-11,97", "-13,10", "-78,13", "-33,22", "-15,82", "-6,20", "-395,27"],
-        "Getiri % (Son 3 yıl)": ["32,92", "4,86", "N/A", "19,48", "-48,80", "184,88", "N/A", "73,13", "39,77", "1.418,67"],
-        "Getiri % (Son 5 yıl)": ["N/A", "105,23", "N/A", "587,08", "1.231,93", "300,00", "N/A", "798,97", "310,23", "N/A"]
+# --- FINTABLES TARZI CSS (Menü ve Renkler İçin) ---
+st.markdown("""
+<style>
+    /* Genel Arka Plan ve Yazı Rengi */
+    .stApp {
+        background-color: #121212;
+        color: #E0E0E0;
     }
-    return pd.DataFrame(yedek_veri)
+    
+    /* Fintables Menü Çubuğu (Üst Sekmeler) */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+        background-color: #1E1E1E;
+        border-bottom: 1px solid #333;
+    }
+    .stTabs [data-baseweb="tab"] {
+        background-color: #1E1E1E;
+        color: #A0A0A0;
+        border-radius: 0;
+        padding: 10px 20px;
+        font-weight: bold;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #2C2C2C !important;
+        color: #FFFFFF !important;
+        border-bottom: 3px solid #FF9900; /* Fintables Turuncusu */
+    }
+    
+    /* Sol Menü (Sidebar) */
+    section[data-testid="stSidebar"] {
+        background-color: #1E1E1E;
+        border-right: 1px solid #333;
+    }
+    section[data-testid="stSidebar"] .stButton button {
+        background-color: transparent;
+        color: #FFFFFF;
+        border: none;
+        text-align: left;
+        width: 100%;
+    }
+    section[data-testid="stSidebar"] .stButton button:hover {
+        background-color: #2C2C2C;
+        color: #FF9900;
+    }
+    
+    /* Tablo Başlıkları */
+    thead tr th:first-child {display:none}
+    thead tr th {
+        background-color: #2C2C2C !important;
+        color: #FF9900 !important;
+        font-weight: bold;
+    }
+    tbody tr:nth-child(even) {
+        background-color: #1E1E1E;
+    }
+    tbody tr:hover {
+        background-color: #333333;
+    }
+    
+    /* Başlıklar */
+    h1, h2, h3 {
+        color: #FFFFFF !important;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# Teknik Analiz Bölümü (Streamlit Widget Hatası Düzeltildi)
-# -----------------------------------------------------------------------------
+# --- BIST HİSSE LİSTESİ (İstediğiniz kadar ekleyebilirsiniz) ---
+# Örnek olarak BIST 100 listesi eklendi. Tüm hisseler için bu listeyi uzatabilirsiniz.
+BIST_TICKERS = [
+    "THYAO", "ASELS", "GARAN", "AKBNK", "YKBNK", "ISATR", "EREGL", "SISE", "KCHOL", "SAHOL",
+    "TUPRS", "PGSUS", "TAVHL", "BIMAS", "MGROS", "SOKM", "FROTO", "TOASO", "TTRAK", "KRDMD",
+    "KOZAL", "KOZAA", "GUBRF", "HEKTS", "TKFEN", "ENKAI", "GOZDE", "ISGYO", "KONTR", "ALARK"
+    # "A1CAP", "A1YEN", "AAGYO", "ACSEL", "ADEL" ... buraya tüm istediğinizi ekleyin
+]
+
+# --- YAPAY ZEKA DESTEKLİ HESAPLAMA MOTORU (Fintables Benzeri) ---
+@st.cache_data(ttl=600) # 10 dakika boyunca veriyi önbellekte tutar
+def get_radar_data():
+    """Tüm hisselerin verilerini çeker ve Fintables tablosundaki gibi hesaplar."""
+    rows = []
+    for ticker in BIST_TICKERS:
+        try:
+            # Verileri çek (Son 1 yıl)
+            df = yf.download(ticker, period="1y", interval="1d", progress=False)
+            if df.empty:
+                continue
+            
+            # Güncel veriler
+            last_price = df['Close'].iloc[-1]
+            prev_price = df['Close'].iloc[-2]
+            
+            # Günlük Değişim %
+            daily_change = ((last_price - prev_price) / prev_price) * 100
+            
+            # Hacim
+            volume = df['Volume'].iloc[-1] / 1000000  # Milyon cinsinden
+            
+            # Getiri Hesaplamaları (1 hafta, 1 ay, 3 ay, 6 ay, Yılbaşı, 1 yıl)
+            def get_return(days):
+                if len(df) > days:
+                    past_price = df['Close'].iloc[-days-1]
+                    return ((last_price - past_price) / past_price) * 100
+                return np.nan
+            
+            ret_1w = get_return(5)
+            ret_1m = get_return(21)
+            ret_3m = get_return(63)
+            ret_6m = get_return(126)
+            
+            # Yılbaşından bugüne
+            year_start = datetime(datetime.now().year, 1, 1)
+            year_start_data = df[df.index >= year_start]
+            if not year_start_data.empty:
+                ytd_return = ((last_price - year_start_data['Close'].iloc[0]) / year_start_data['Close'].iloc[0]) * 100
+            else:
+                ytd_return = np.nan
+
+            ret_1y = get_return(252)
+            ret_3y = np.nan
+            ret_5y = np.nan
+            
+            rows.append({
+                "Hisse": ticker,
+                "Fiyat": round(last_price, 2),
+                "Gün %": round(daily_change, 2),
+                "Hacim": round(volume, 2),
+                "Getiri % (Son 1 hafta)": round(ret_1w, 2) if not np.isnan(ret_1w) else "N/A",
+                "Getiri % (Son 1 ay)": round(ret_1m, 2) if not np.isnan(ret_1m) else "N/A",
+                "Getiri % (Son 3 ay)": round(ret_3m, 2) if not np.isnan(ret_3m) else "N/A",
+                "Getiri % (Son 6 ay)": round(ret_6m, 2) if not np.isnan(ret_6m) else "N/A",
+                "Getiri % (Yılbaşından bugüne)": round(ytd_return, 2) if not np.isnan(ytd_return) else "N/A",
+                "Getiri % (Son 1 yıl)": round(ret_1y, 2) if not np.isnan(ret_1y) else "N/A",
+                "Getiri % (Son 3 yıl)": ret_3y,
+                "Getiri % (Son 5 yıl)": ret_5y
+            })
+        except Exception:
+            continue
+    
+    return pd.DataFrame(rows)
+
+# --- BÖLÜM 1: TEKNİK ANALİZ ---
 def teknik_analiz():
     st.subheader("📊 Teknik Analiz")
-    
-    # key parametresi eklenerek session_state çakışması önlendi
     ticker = st.text_input("Hisse Sembolü", value="THYAO", key="teknik_ticker_input").upper().strip()
     
     if st.button("Analiz Et", key="analiz_buton"):
         if not ticker:
-            st.error("Lütfen bir hisse sembolü girin.")
+            st.error("Lütfen bir sembol girin.")
             return
-        
         try:
             df = yf.download(ticker, period="6mo", interval="1d", progress=False)
             if df.empty:
                 st.error(f"'{ticker}' için veri bulunamadı.")
                 return
-            
-            # Veriyi session_state'e kaydet (Widget anahtarı değil, veri)
             st.session_state['teknik_df'] = df
         except Exception as e:
             st.error(f"Veri çekilirken hata oluştu: {e}")
@@ -80,7 +176,6 @@ def teknik_analiz():
         df = st.session_state['teknik_df']
         st.write(f"**{ticker}** Son 6 Ay Verileri:")
         st.dataframe(df.tail(20), width='stretch')
-        
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Son Fiyat", f"{df['Close'].iloc[-1]:.2f}")
@@ -88,108 +183,100 @@ def teknik_analiz():
             st.metric("Günlük Değişim", f"{(df['Close'].iloc[-1] / df['Close'].iloc[-2] - 1) * 100:.2f}%")
         with col3:
             st.metric("Hacim", f"{df['Volume'].iloc[-1]:,.0f}")
-        
         st.line_chart(df['Close'], width='stretch')
 
-# -----------------------------------------------------------------------------
-# Yüksek Potansiyelli Tavan Hisseler
-# -----------------------------------------------------------------------------
+# --- BÖLÜM 2: YÜKSEK POTANSİYELLİ TAVAN HİSSELER ---
 def yuksek_potansiyel():
     st.subheader("🚀 Yüksek Potansiyelli Tavan Hisseler")
-    st.write("Fintables verilerinden yüksek potansiyelli hisseler listelenir.")
-    
-    df = fintables_veri_cek()
+    df = get_radar_data()
     
     if df.empty:
-        st.info("Veri alınamadı. Lütfen daha sonra tekrar deneyin.")
+        st.info("Veri alınamadı. Lütfen BIST_TICKERS listesini kontrol edin.")
         return
     
-    # Tavan hisseleri filtrele (Gün % sütunu 9.9 ve üzeri olanlar)
-    # Örnek veride negatif değerler olduğu için "tavan yok" mesajı çıkacaktır.
-    # Gerçek API bağlandığında otomatik olarak çalışır.
-    if 'Gün %' in df.columns:
-        try:
-            # String olan değerleri sayıya çevirerek filtreleme yap
-            df['Gün % Sayı'] = pd.to_numeric(df['Gün %'].astype(str).str.replace(',', '.'), errors='coerce')
-            tavanlar = df[df['Gün % Sayı'] >= 9.9]
-            if not tavanlar.empty:
-                st.success(f"🔔 Şu an {len(tavanlar)} adet tavan hisse var!")
-                st.dataframe(tavanlar, width='stretch')
-            else:
-                st.info("Şu an tavan hisse bulunmuyor.")
-        except Exception:
-            st.info("Tavan hisse verisi hesaplanamadı.")
+    # YZ Modeli: Tavan Hisseleri Tespit Et (Günlük %10 ve üzeri artış)
+    df['Gün % Sayı'] = pd.to_numeric(df['Gün %'], errors='coerce')
+    tavanlar = df[df['Gün % Sayı'] >= 9.9]
+    
+    if not tavanlar.empty:
+        st.success(f"🔔 Şu an {len(tavanlar)} adet tavan hisse var!")
+        st.dataframe(tavanlar, width='stretch')
+    else:
+        st.info("Şu an tavan hisse bulunmuyor. (Veriler 10 dakikada bir güncellenir)")
     
     st.subheader("📋 Tüm Radar Verileri")
-    st.dataframe(df, width='stretch')
+    # Fintables Stilinde Renkli Tablo
+    st.dataframe(df.drop(columns=['Gün % Sayı']), width='stretch')
 
-# -----------------------------------------------------------------------------
-# Genel Sistem Verileri - Fintables (Menü Düzeni ve Veri)
-# -----------------------------------------------------------------------------
+# --- BÖLÜM 3: TEMEL ANALİZ ---
+def temel_analiz():
+    st.subheader("📈 Temel Analiz")
+    st.write("Temel analiz verileri (F/K, PD/DD vb.) burada gösterilecektir.")
+
+# --- BÖLÜM 4: GENEL SİSTEM VERİLERİ - FINTABLES KLONU ---
 def genel_sistem_verileri():
-    st.subheader("🌐 Genel Sistem Verileri - Fintables Radar")
-    st.write("Aşağıda Fintables menü düzeni ve tablo yapısı birebir simüle edilmiştir.")
+    st.subheader("🌐 Genel Sistem Verileri - Fintables Benzeri Arayüz")
     
-    # Fintables'taki Üst Sekmeler (Menü Çubuğu)
-    menuler = ["Getiri", "Değerleme", "Karlılık", "Büyüme", "Bilanço", "Gelir Tablosu", "Nakit Akım"]
-    secili_menu = st.radio("Menü Seçin", menuler, horizontal=True, key="fintables_menu")
+    # Fintables Menü Çubuğu Simülasyonu (Tabs)
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Getiri", "Değerleme", "Karlılık", "Büyüme", "Bilanço", "Gelir Tablosu", "Nakit Akım"])
     
-    # Verileri Çek
-    df = fintables_veri_cek()
+    # Sol Menü Simülasyonu
+    with st.sidebar:
+        st.header("📋 Menü")
+        if st.button("🔍 Radar"):
+            st.session_state['menu'] = "Radar"
+        if st.button("📈 Hisse"):
+            st.session_state['menu'] = "Hisse"
+        if st.button("🌍 Endeksler"):
+            st.session_state['menu'] = "Endeksler"
+        if st.button("💎 VIP"):
+            st.session_state['menu'] = "VIP"
+        if st.button("🪙 Kripto"):
+            st.session_state['menu'] = "Kripto"
+        st.markdown("---")
+        st.caption("Veriler herkese açık kaynaklardan (yfinance) çekilir ve Fintables mantığıyla hesaplanır.")
     
-    # Fintables'taki Sol Menü / Alt Menüler
-    st.markdown("---")
-    st.write("**Alt Menüler:**")
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.button("Radar")
-    with col2:
-        st.button("Hisse")
-    with col3:
-        st.button("Endeksler")
-    with col4:
-        st.button("VIP")
-    with col5:
-        st.button("Kripto")
+    # Veriyi Çek
+    df = get_radar_data()
     
-    # Menüye göre içerik değişimi
-    if secili_menu == "Getiri":
+    # Fintables Getiri Tablosu
+    with tab1:
         st.write("### Getiri Tablosu")
-        st.dataframe(df, width='stretch')
-    elif secili_menu == "Değerleme":
-        st.info("Değerleme menüsü verileri API'den çekilecektir. (F12 ile URL güncellenmelidir)")
-    elif secili_menu == "Karlılık":
-        st.info("Karlılık menüsü verileri API'den çekilecektir. (F12 ile URL güncellenmelidir)")
-    else:
-        st.info(f"'{secili_menu}' menüsü için örnek veri gösteriliyor.")
-        st.dataframe(df.head(10), width='stretch')
-    
-    st.caption(f"Son güncelleme: {datetime.now().strftime('%d.%m.%Y %H:%M')} (Veriler 5 dakikada bir yenilenir)")
+        # Sıralama (Örneğin Günlük Değişime göre)
+        if not df.empty:
+            df_sorted = df.sort_values(by="Gün %", ascending=False)
+            st.dataframe(df_sorted, width='stretch')
+        else:
+            st.info("Veri bekleniyor...")
 
-# -----------------------------------------------------------------------------
-# Ana Akış
-# -----------------------------------------------------------------------------
+    with tab2:
+        st.info("Değerleme menüsü için F/K, PD/DD gibi veriler yfinance'ten çekilebilir. Bu bölüm için ek kod gerekir.")
+    with tab3:
+        st.info("Karlılık menüsü için Fintables API'sine bağlanmanız önerilir. (F12 -> Network)")
+    with tab4:
+        st.info("Büyüme menüsü simüle edilmiştir.")
+    with tab5:
+        st.info("Bilanço menüsü simüle edilmiştir.")
+    with tab6:
+        st.info("Gelir Tablosu menüsü simüle edilmiştir.")
+    with tab7:
+        st.info("Nakit Akım menüsü simüle edilmiştir.")
+
+# --- ANA AKIŞ ---
 def main():
     st.title("📊 AI Destekli Hisse Analiz Sistemi")
     
+    # Sekmeler
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Teknik Analiz", "🚀 Yüksek Potansiyel", "📈 Temel Analiz", "🌐 Genel Sistem Verileri"])
     
     with tab1:
         teknik_analiz()
-    
     with tab2:
         yuksek_potansiyel()
-    
     with tab3:
-        temel_analiz() # Buraya kendi temel analiz kodunuzu ekleyebilirsiniz
-    
+        temel_analiz()
     with tab4:
         genel_sistem_verileri()
-
-# Temel Analiz fonksiyonu (Hata vermemesi için boş tanımlı)
-def temel_analiz():
-    st.subheader("📈 Temel Analiz")
-    st.write("Temel analiz verileri burada gösterilecektir.")
 
 if __name__ == "__main__":
     main()
