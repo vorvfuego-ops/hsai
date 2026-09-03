@@ -8,28 +8,7 @@ from streamlit_autorefresh import st_autorefresh
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Quantum BIST Terminali", layout="wide")
-
-# --- OTOMATİK YENİLEME (60 Saniye) ---
-# Bu satır uygulamanın tamamını 60 saniyede bir otomatik yeniler.
 st_autorefresh(interval=60000, key="data_refresh")
-
-# --- CSS ---
-st.markdown("""
-<style>
-    .stApp { background-color: #0A0E17; color: #E0E0E0; }
-    section[data-testid="stSidebar"] { background: linear-gradient(180deg, #101624, #0A0E17); border-right: 1px solid #1F2937; }
-    section[data-testid="stSidebar"] .stButton > button { background-color: transparent; color: #8B949E; border: none; text-align: left; width: 100%; padding: 10px; font-size: 16px; font-weight: 500; border-radius: 8px; transition: all 0.3s ease; }
-    section[data-testid="stSidebar"] .stButton > button:hover { background-color: #1F2937; color: #58A6FF; }
-    thead tr th:first-child {display:none}
-    thead tr th { background-color: #161B22 !important; color: #58A6FF !important; font-weight: bold; border-bottom: 2px solid #30363D; }
-    tbody tr:nth-child(even) { background-color: #161B22; }
-    tbody tr:hover { background-color: #1F2937; }
-    h1, h2, h3 { color: #FFFFFF !important; letter-spacing: -0.5px; }
-    .stTabs [data-baseweb="tab-list"] { gap: 4px; border-bottom: 2px solid #30363D; }
-    .stTabs [data-baseweb="tab"] { background-color: transparent; color: #8B949E; border-radius: 8px 8px 0 0; padding: 12px 24px; font-weight: 600; border: none; transition: all 0.3s ease; }
-    .stTabs [aria-selected="true"] { background-color: #161B22 !important; color: #58A6FF !important; border-bottom: 3px solid #58A6FF; }
-</style>
-""", unsafe_allow_html=True)
 
 # --- YARDIMCI FONKSİYONLAR ---
 def safe_float(val):
@@ -63,6 +42,15 @@ def format_percent(val):
     except:
         return "N/A"
 
+def format_market_cap(val):
+    """TradingView'den gelen 'bin TL' cinsindeki Piyasa Değerini 'mr/mn' cinsine çevirir."""
+    try:
+        val = float(val)
+        val = val * 1000  # Bin TL -> Tam TL
+        return format_big_number(val)
+    except:
+        return "N/A"
+
 # --- TRADINGVIEW TOKEN ---
 def get_auth_token():
     try:
@@ -77,8 +65,8 @@ def get_auth_token():
     except:
         return None
 
-# --- VERİ ÇEKME ---
-@st.cache_data(ttl=60) # 60 saniyede bir verileri tazele
+# --- VERİ ÇEKME (Hacim ve Piyasa Değeri Düzeltildi) ---
+@st.cache_data(ttl=60)
 def tum_bist_hisselerini_getir():
     try:
         from tradingview_screener import Query
@@ -107,17 +95,17 @@ def tum_bist_hisselerini_getir():
             'Perf.3Y': 'Getiri % (Son 3 yıl)', 'Perf.5Y': 'Getiri % (Son 5 yıl)'
         })
         
-        # Doğru Hacim Hesaplaması (Adet * Fiyat = TL)
+        # DOĞRU HACİM HESAPLAMASI: Adet * Fiyat = TL Hacim
         df['Hacim'] = (pd.to_numeric(df['Hacim'], errors='coerce') * pd.to_numeric(df['Fiyat'], errors='coerce')).apply(format_big_number)
         
-        # Piyasa değeri bin TL cinsinden gelir
-        df['Piyasa Değeri'] = df['Piyasa Değeri'].apply(lambda x: format_big_number(safe_float(x) * 1000))
+        # Piyasa Değeri: Bin TL'den mr/mn'ye çevir
+        df['Piyasa Değeri'] = df['Piyasa Değeri'].apply(format_market_cap)
         
         return df
     except Exception:
         return pd.DataFrame()
 
-# --- GELİŞMİŞ YZ MODELİ ---
+# --- GELİŞMİŞ YZ MODELİ (Eksik Verileri Tahminler) ---
 def hesapla_ai_verileri(df):
     if df.empty:
         return df
@@ -230,7 +218,7 @@ with st.spinner("YZ ve Veriler güncelleniyor..."):
     else:
         analizli_df = pd.DataFrame()
 
-# --- SOL MENÜ (Gelişmiş Filtreleme Paneli) ---
+# --- SOL MENÜ (Filtreleme Paneli Dahil) ---
 with st.sidebar:
     st.header("📋 Keşfet")
     if st.button("🔍 Radar", use_container_width=True):
@@ -244,7 +232,6 @@ with st.sidebar:
     if st.button("🪙 Kripto", use_container_width=True):
         st.session_state['menu'] = "Kripto"
     st.markdown("---")
-    
     st.header("🧠 Analiz")
     if st.button("📊 Temel Analiz", use_container_width=True):
         st.session_state['menu'] = "Temel Analiz"
@@ -252,69 +239,28 @@ with st.sidebar:
         st.session_state['menu'] = "Detaylı Analiz"
     if st.button("💎 Orijinal Hisseler", use_container_width=True):
         st.session_state['menu'] = "Orijinal Hisseler"
-        
     st.markdown("---")
-    
-    # --- FİLTRELEME PANELİ ---
     st.header("🔎 Filtreler")
-    
     if not analizli_df.empty:
-        # 1. Arama
         arama = st.text_input("Hisse Ara", placeholder="Örn: THYAO")
-        
-        # 2. Kategori Seçimi (Popüler Filtreler)
         kategori = st.selectbox("Kategori", ["Tümü", "Getiri %", "Fiyat", "Hacim", "AI Sinyali"])
-        
-        # 3. AI Sinyali Filtresi
         secili_sinyaller = st.multiselect("AI Sinyali", ["🟢 Güçlü Al", "🔵 Al", "🟡 İzle", "⚪ Nötr"], default=["🟢 Güçlü Al", "🔵 Al"])
-        
-        # 4. Sayısal Aralık Filtreleri
         fiyat_min, fiyat_max = st.slider("Fiyat Aralığı (TL)", 0.0, 1000.0, (0.0, 1000.0))
-        
-        # 5. Getiri % Filtresi (Örnek olarak 1 Ay)
         getiri_min, getiri_max = st.slider("Getiri % (Son 1 Ay)", -100.0, 100.0, (-100.0, 100.0))
         
-        # Filtreleri Uygula
         df_filtre = analizli_df.copy()
-        
-        # Hisse Adına Göre Filtrele
         if arama:
             df_filtre = df_filtre[df_filtre['Hisse'].str.contains(arama.upper(), na=False)]
-        
-        # AI Sinyaline Göre Filtrele
         if secili_sinyaller:
             df_filtre = df_filtre[df_filtre['AI Sinyal'].isin(secili_sinyaller)]
-        
-        # Fiyata Göre Filtrele
         df_filtre['Fiyat_Numeric'] = pd.to_numeric(df_filtre['Fiyat'].astype(str).str.replace(' TL', ''), errors='coerce')
         df_filtre = df_filtre[(df_filtre['Fiyat_Numeric'] >= fiyat_min) & (df_filtre['Fiyat_Numeric'] <= fiyat_max)]
-        
-        # Getiriye Göre Filtrele (1 Ay)
         df_filtre['Getiri_1A_Numeric'] = pd.to_numeric(df_filtre['Getiri % (Son 1 ay)'].astype(str).str.replace('%', ''), errors='coerce')
         df_filtre = df_filtre[(df_filtre['Getiri_1A_Numeric'] >= getiri_min) & (df_filtre['Getiri_1A_Numeric'] <= getiri_max)]
-        
-        # Geçici kolonları temizle
         df_filtre = df_filtre.drop(columns=['Fiyat_Numeric', 'Getiri_1A_Numeric'], errors='ignore')
-        
-        # Kaydetme Özelliği (Listeme Ekle)
-        if "kayitli_hisseler" not in st.session_state:
-            st.session_state["kayitli_hisseler"] = []
-            
-        secili_hisse_liste = st.multiselect("Listeye Eklenecek Hisseler", options=df_filtre['Hisse'].tolist())
-        if st.button("💾 Kaydet"):
-            st.session_state["kayitli_hisseler"].extend(secili_hisse_liste)
-            st.success("Hisseler kaydedildi!")
-            
-        if st.session_state["kayitli_hisseler"]:
-            st.write(f"**Kayıtlı Hisseler:** {', '.join(st.session_state['kayitli_hisseler'])}")
-            if st.button("Temizle"):
-                st.session_state["kayitli_hisseler"] = []
-                st.rerun()
     else:
+        df_filtre = pd.DataFrame()
         st.warning("Veri bekleniyor...")
-
-    st.markdown("---")
-    st.caption("Otomatik yenileme: 60 sn")
     
     if 'menu' not in st.session_state:
         st.session_state['menu'] = "Radar"
@@ -322,11 +268,10 @@ with st.sidebar:
 
 # --- ÜST SEKMELER ---
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "📊 Getiri", "💎 Değerleme", "📈 Karlılık", "🚀 Büyme", 
+    "📊 Getiri", "💎 Değerleme", "📈 Karlılık", "🚀 Büyüme", 
     "📋 Bilanço", "💵 Gelir Tablosu", "💧 Nakit Akım", "🔥 Yüksek Potansiyel"
 ])
 
-# TAB 1: GETİRİ (Filtrelenmiş veri)
 with tab1:
     st.subheader("📊 Getiri Tablosu (Alfabetik)")
     if not df_filtre.empty:
@@ -343,7 +288,6 @@ with tab1:
     else:
         st.error("Filtrelerle eşleşen hisse bulunamadı.")
 
-# Diğer sekmeler (Filtrelenmiş veri kullanılır)
 with tab2:
     st.subheader("💎 Değerleme (Alfabetik)")
     if not df_filtre.empty:
