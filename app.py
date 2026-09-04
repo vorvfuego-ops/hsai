@@ -236,9 +236,9 @@ def hesapla_ai_verileri(df):
         return olasilik
 
     df['Monte Carlo Olasılığı (%)'] = df.apply(monte_carlo_olasilik, axis=1)
+    df['Monte Carlo Olasılığı (%)'] = df['Monte Carlo Olasılığı (%)'].fillna(0)
 
-    # 10.000 TL Üzerinden Tahmini Getiri Hesabı (YENİ EKLENDİ)
-    # Hedef getiri varsayımı: 5 günde %10 artış olasılığı
+    # 10.000 TL Üzerinden Tahmini Getiri Hesabı
     df['Tahmini Getiri (10K TL)'] = df.apply(lambda row: (10000 * (row['Monte Carlo Olasılığı (%)'] / 100) * 0.10), axis=1).round(2)
 
     def hesapla_skor(row):
@@ -270,10 +270,9 @@ def hesapla_ai_verileri(df):
     
     def sinyal_uret(row):
         skor = safe_float(row['Yatırım Fırsat Skoru'])
-        # Skor 75 artık Mükemmel
         if skor >= 75: return "🟢 Mükemmel Al"
-        elif skor >= 70: return "🟢 Güçlü Al"
-        elif skor >= 60: return "🔵 Al"
+        elif skor >= 65: return "🟢 Güçlü Al"
+        elif skor >= 55: return "🔵 Al"
         elif skor >= 45: return "🟡 İzle"
         else: return "⚪ Nötr"
     
@@ -331,16 +330,33 @@ if not analizli_df.empty:
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔔 Telegram Testi")
+    
+    # YENİ: Geçmişi Sıfırla Butonu
+    if st.sidebar.button("Alarm Geçmişini Sıfırla", key="clear_history_btn"):
+        st.session_state['bildirilen_alimlar'] = []
+        st.session_state['bildirilen_satislar'] = []
+        st.session_state['bildirilen_tarih'] = "N/A" # Tarihi değiştirerek reset'i zorla
+        st.sidebar.success("Alarm geçmişi sıfırlandı!")
+
+    # YENİ: Top 10 Test Alarmı
+    if st.sidebar.button("Top 10 Test Alarmı Gönder", key="test_top10_btn"):
+        top10 = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(10)
+        test_mesaji = "🧪 <b>MANUEL TEST ALARMI (Top 10)</b>\n\n"
+        for _, row in top10.iterrows():
+            test_mesaji += f"📈 {row['Hisse']} - Skor: {row['Yatırım Fırsat Skoru']} - MC: {row['Monte Carlo Olasılığı (%)']}\n"
+        send_telegram_alert(test_mesaji)
+        st.sidebar.success("Test alarmı gönderildi.")
+
     if st.sidebar.button("Test Bildirimi Gönder", key="telegram_test_btn"):
         test_mesaji = "✅ <b>Test Bildirimi Başarılı!</b>\n\nQuantum BIST Terminali çalışıyor ve Telegram bağlantısı aktif."
         send_telegram_alert(test_mesaji)
         st.sidebar.success("Test mesajı gönderildi. Telegram'ı kontrol edin.")
 
     if piyasa_acik:
-        # 1) ALIM SİNYALİ KONTROLÜ (Skor >= 70 ve MC > 15)
+        # 1) ALIM SİNYALİ KONTROLÜ (Skor >= 65 ve MC > 15)
         # Olasılık değerini doğru okumak için % işaretini kaldır
         bildirim_listesi = analizli_df[
-            (analizli_df['Yatırım Fırsat Skoru'] >= 70) & 
+            (analizli_df['Yatırım Fırsat Skoru'] >= 65) & 
             (analizli_df['Monte Carlo Olasılığı (%)'].str.replace('%', '').astype(float) > 15)
         ]
         
@@ -365,7 +381,6 @@ if not analizli_df.empty:
 
         # 2) ANİ DÜŞÜŞ (SATIŞ) SİNYALİ KONTROLÜ
         # Günlük % değişim -3'ün altına düşerse kullanıcıyı uyar
-        # Gün % sütunu string formatında, bu yüzden sayıya çeviriyoruz
         ani_dusus_df = analizli_df[
             analizli_df['Gün %'].str.replace('%', '').astype(float) <= -3.0
         ]
@@ -454,7 +469,7 @@ with tab8:
     if not analizli_df.empty:
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
         st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Monte Carlo Olasılığı (%)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Tahmini Getiri (10K TL)', 'Neden Alınmalı?']], width='stretch', hide_index=True)
-        st.success("Piyasa açıkken skoru 70+ ve olasılığı %15+ olan hisseler otomatik bildirilir. Ayrıca günlük %3'ten fazla düşenler için satış uyarısı yapılır.")
+        st.success("Piyasa açıkken skoru 65+ ve olasılığı %15+ olan hisseler otomatik bildirilir. Ayrıca günlük %3'ten fazla düşenler için satış uyarısı yapılır.")
 
 # --- SOL MENÜ MODÜLLERİ ---
 st.markdown("---")
