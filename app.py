@@ -51,8 +51,10 @@ def send_telegram_alert(message):
         response = requests.post(url, json=payload, timeout=5)
         if response.status_code != 200:
             st.warning(f"Telegram Hatası: {response.text}")
+            print(f"Telegram Hatası: {response.text}")  # Loglara da yaz
     except Exception as e:
         st.error(f"Telegram Ayarları Hatalı: {e}")
+        print(f"Telegram Ayarları Hatalı: {e}")
 
 # --- MAKRO VERİ ---
 def get_macro_data():
@@ -318,16 +320,16 @@ with st.spinner("Quantum YZ çalışıyor..."):
     else:
         analizli_df = pd.DataFrame()
 
-# --- PİYASA SAATİ KONTROLÜ VE TELEGRAM BİLDİRİMİ ---
+# --- TELEGRAM BİLDİRİM KONTROLÜ (SADECE HAFTA İÇİ, SAAT KONTROLÜ YOK) ---
 if not analizli_df.empty:
     now = datetime.now()
-    # Piyasa açık: Hafta içi 09:00 - 19:00 arası
-    piyasa_acik = (now.weekday() < 5) and (now.hour >= 9 and now.hour < 19)
+    # Piyasa kontrolü: Sadece hafta içi (Pazartesi - Cuma) çalışsın. Saat farkı sorununu çözmek için saat kontrolü kaldırıldı.
+    hafta_ici = now.weekday() < 5  # 0=Pazartesi, 4=Cuma
     
     # Oturum başlangıcında zamanlayıcıları sıfırla
     if 'bildirilen_tarih' not in st.session_state or st.session_state['bildirilen_tarih'] != str(now.date()):
-        st.session_state['alim_bildirim_zamanlari'] = {}
-        st.session_state['satis_bildirim_zamanlari'] = {}
+        st.session_state['alim_bildirim_zamanlari'] = {}  # {Hisse: datetime}
+        st.session_state['satis_bildirim_zamanlari'] = {}  # {Hisse: datetime}
         st.session_state['bildirilen_tarih'] = str(now.date())
 
     st.sidebar.markdown("---")
@@ -347,24 +349,21 @@ if not analizli_df.empty:
         send_telegram_alert(test_mesaji)
         st.sidebar.success("Test mesajı gönderildi. Telegram'ı kontrol edin.")
 
-    # --- OTOMATİK ALARMLAR (15 Dakikada 1 Kez Mantığı) ---
-    if piyasa_acik:
-        # ALIM SİNYALİ - Skor >= 70 ve MC > 15
-        # Güvenli filtreleme: MC değerini sayıya çevirelim
-        # DataFrame'de 'Monte Carlo Olasılığı (%)' string formatında (%33.33)
-        # Bu yüzden geçici bir sayısal sütun oluşturuyoruz
-        analizli_df['mc_float'] = analizli_df['Monte Carlo Olasılığı (%)'].str.replace('%', '').astype(float)
+    # --- OTOMATİK ALARMLAR (15 Dakikada 1 Kez Mantığı ile) ---
+    if hafta_ici:  # Sadece hafta içi çalış
+        # 1) ALIM SİNYALİ (Skor >= 70 ve MC > 15)
+        # Monte Carlo sütunu şu an string (%33.33), sayıya çevirip filtreliyoruz
+        mc_float = analizli_df['Monte Carlo Olasılığı (%)'].str.replace('%', '').astype(float)
+        skor_float = analizli_df['Yatırım Fırsat Skoru'].astype(float)
         
-        bildirim_listesi = analizli_df[
-            (analizli_df['Yatırım Fırsat Skoru'] >= 70) & 
-            (analizli_df['mc_float'] > 15)
-        ]
+        bildirim_listesi = analizli_df[(skor_float >= 70) & (mc_float > 15)]
         
         for _, row in bildirim_listesi.iterrows():
             hisse = row['Hisse']
             son_bildirim_zamani = st.session_state['alim_bildirim_zamanlari'].get(hisse)
             
-            if son_bildirim_zamani is None or (now - son_bildirim_zamani).total_seconds() > 900: # 15 dakika
+            # Eğer hiç bildirim yoksa VEYA son bildirimden 15 dakika geçtiyse
+            if son_bildirim_zamani is None or (now - son_bildirim_zamani).total_seconds() > 900:
                 skor = row['Yatırım Fırsat Skoru']
                 
                 baslik = "🚀 MÜKEMMEL YATIRIM FIRSATI!" if skor >= 75 else "📈 Güçlü Alım Sinyali"
@@ -377,18 +376,12 @@ if not analizli_df.empty:
                 mesaj += f"💵 10.000 TL Beklenen Getiri: <b>{row['Tahmini Getiri (10K TL)']} TL</b>\n"
                 mesaj += f"💡 Neden: {row['Neden Alınmalı?']}"
                 
-                try:
-                    send_telegram_alert(mesaj)
-                    st.session_state['alim_bildirim_zamanlari'][hisse] = now
-                except Exception as e:
-                    st.error(f"Alarm gönderilemedi: {e}")
+                send_telegram_alert(mesaj)
+                st.session_state['alim_bildirim_zamanlari'][hisse] = now
 
-        # ANİ DÜŞÜŞ (SATIŞ) SİNYALİ - Günlük %-3 altı
-        # Aynı şekilde Gün % sütunu string formatında
-        analizli_df['gun_float'] = analizli_df['Gün %'].str.replace('%', '').astype(float)
-        ani_dusus_df = analizli_df[
-            analizli_df['gun_float'] <= -3.0
-        ]
+        # 2) ANİ DÜŞÜŞ (SATIŞ) SİNYALİ (Günlük %-3 altı, 15 dk sınırı ile)
+        gun_float = analizli_df['Gün %'].str.replace('%', '').astype(float)
+        ani_dusus_df = analizli_df[gun_float <= -3.0]
         
         for _, row in ani_dusus_df.iterrows():
             hisse = row['Hisse']
@@ -401,11 +394,8 @@ if not analizli_df.empty:
                 mesaj += f"📊 Günlük Değişim: {row['Gün %']}\n"
                 mesaj += f"⚠️ Zarar etmemek için pozisyonunuzu kontrol edin!"
                 
-                try:
-                    send_telegram_alert(mesaj)
-                    st.session_state['satis_bildirim_zamanlari'][hisse] = now
-                except Exception as e:
-                    st.error(f"Satış alarmı gönderilemedi: {e}")
+                send_telegram_alert(mesaj)
+                st.session_state['satis_bildirim_zamanlari'][hisse] = now
 
 # --- SOL MENÜ VE DİĞER SEKMELER ---
 with st.sidebar:
@@ -509,7 +499,7 @@ if menu_secim == "Temel Analiz":
         for col in ['F/K', 'PD/DD', 'ROE', 'Net Marj', 'Borç/Özkaynak', 'Temettü Verimi']:
             df_temel[col] = df_temel[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
         
-        st.dataframe(df_temel, width='stretch', hide_index=True)
+        st.dataframe(df_temel, use_container_width=True, hide_index=True)
         
         # Detaylı Analiz İçin Hisse Seçimi
         st.markdown("---")
