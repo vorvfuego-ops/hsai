@@ -6,8 +6,9 @@ import warnings
 from streamlit_autorefresh import st_autorefresh
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
+import yfinance as yf
 
 warnings.filterwarnings("ignore")
 
@@ -51,10 +52,8 @@ def send_telegram_alert(message):
         response = requests.post(url, json=payload, timeout=5)
         if response.status_code != 200:
             st.warning(f"Telegram Hatası: {response.text}")
-            print(f"Telegram Hatası: {response.text}")
     except Exception as e:
         st.error(f"Telegram Ayarları Hatalı: {e}")
-        print(f"Telegram Ayarları Hatalı: {e}")
 
 # --- MAKRO VERİ ---
 def get_macro_data():
@@ -239,13 +238,8 @@ def hesapla_ai_verileri(df):
 
     df['Monte Carlo Olasılığı (%)'] = df.apply(monte_carlo_olasilik, axis=1).fillna(0)
 
-    # --- YENİ EKLENEN ALAN: BEKLENEN ORTALAMA KÂR (10.000 TL İÇİN) ---
-    # Hedef %10 artış. 10.000 TL yatırırsak hedef kazanç 1.000 TL'dir.
-    # Ancak Monte Carlo olasılığı %15 ise, "beklenen ortalama kâr" = 1.000 TL * 0.15 = 150 TL olur.
-    # Bu, kullanıcıya somut bir rakam verir.
-    df['Beklenen Ortalama Kâr (10K TL)'] = df.apply(
-        lambda row: (10000 * 0.10) * (row['Monte Carlo Olasılığı (%)'] / 100), axis=1
-    ).round(2)
+    # 10.000 TL Üzerinden Tahmini Getiri Hesabı (Beklenen Değer)
+    df['Tahmini Getiri (10K TL)'] = df.apply(lambda row: (10000 * (row['Monte Carlo Olasılığı (%)'] / 100) * 0.10), axis=1).round(2)
 
     def hesapla_skor(row):
         skor = 50
@@ -317,6 +311,63 @@ def hesapla_ai_verileri(df):
     
     return df
 
+# --- PERFORMANS TAKİP FONKSİYONU ---
+def performans_raporu_olustur(gecmis_sinyaller):
+    """
+    Verilen sinyalleri yfinance verileriyle karşılaştırarak gerçek getiriyi hesaplar.
+    """
+    if not gecmis_sinyaller:
+        return pd.DataFrame()
+
+    rapor_listesi = []
+    
+    for sinyal in gecmis_sinyaller:
+        hisse = sinyal['hisse']
+        sinyal_tarihi = datetime.strptime(sinyal['tarih'], '%Y-%m-%d')
+        
+        try:
+            # Hisse verisini çek (BIST için .IS uzantısı)
+            veri = yf.download(f"{hisse}.IS", period="10d", progress=False, auto_adjust=False)
+            
+            if veri.empty:
+                continue
+            
+            # Sinyal gününün kapanış fiyatını bul
+            sinyal_gunu_verisi = veri[veri.index.date == sinyal_tarihi.date()]
+            if not sinyal_gunu_verisi.empty:
+                alis_fiyati = sinyal_gunu_verisi['Close'].iloc[0]
+            else:
+                # Eğer o gün veri yoksa (tatil vs), ilk mevcut günün kapanışını kullan
+                alis_fiyati = veri['Close'].iloc[0]
+
+            # Bugünün açılış ve kapanış fiyatları (son mevcut gün)
+            bugunku_veri = veri.iloc[-1]
+            bugun_acilis = bugunku_veri['Open']
+            bugun_kapanis = bugunku_veri['Close']
+            
+            # Getiri hesaplama
+            getiri_yuzde = ((bugun_kapanis - alis_fiyati) / alis_fiyati) * 100
+            getiri_tl = 10000 * (getiri_yuzde / 100)
+            
+            # 5 günlük hedefe ulaşıldı mı?
+            hedefe_ulasti = "Evet" if bugun_kapanis >= (alis_fiyati * 1.10) else "Hayır"
+            
+            rapor_listesi.append({
+                "Hisse": hisse,
+                "Sinyal Tarihi": sinyal['tarih'],
+                "Alış Fiyatı (TL)": round(alis_fiyati, 2),
+                "Bugün Açılış (TL)": round(bugun_acilis, 2),
+                "Bugün Kapanış (TL)": round(bugun_kapanis, 2),
+                "Güncel Getiri (%)": round(getiri_yuzde, 2),
+                "10.000 TL Kazanç/Zarar (TL)": round(getiri_tl, 2),
+                "5 Günlük %10 Hedefi": hedefe_ulasti
+            })
+            
+        except Exception as e:
+            st.warning(f"{hisse} verisi çekilemedi: {e}")
+
+    return pd.DataFrame(rapor_listesi)
+
 # --- VERİ YÜKLEME ---
 with st.spinner("Quantum YZ çalışıyor..."):
     tum_hisseler_raw = tum_bist_hisselerini_getir()
@@ -325,7 +376,7 @@ with st.spinner("Quantum YZ çalışıyor..."):
     else:
         analizli_df = pd.DataFrame()
 
-# --- TELEGRAM BİLDİRİM KONTROLÜ (SADECE HAFTA İÇİ, SAAT KONTROLÜ YOK) ---
+# --- TELEGRAM BİLDİRİM KONTROLÜ (SADECE HAFTA İÇİ) ---
 if not analizli_df.empty:
     now = datetime.now()
     hafta_ici = now.weekday() < 5
@@ -335,6 +386,9 @@ if not analizli_df.empty:
         st.session_state['satis_bildirim_zamanlari'] = {}
         st.session_state['bildirilen_tarih'] = str(now.date())
 
+    if 'sinyal_gunlugu' not in st.session_state:
+        st.session_state['sinyal_gunlugu'] = []
+
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔔 Telegram Testi")
     
@@ -342,7 +396,7 @@ if not analizli_df.empty:
         top10 = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(10)
         test_mesaji = "🧪 <b>MANUEL TEST ALARMI (Top 10)</b>\n\n"
         for _, row in top10.iterrows():
-            test_mesaji += f"📈 {row['Hisse']} - Skor: {row['Yatırım Fırsat Skoru']} - MC: {row['Monte Carlo Olasılığı (%)']} - Beklenen Kâr: {row['Beklenen Ortalama Kâr (10K TL)']} TL\n"
+            test_mesaji += f"📈 {row['Hisse']} - Skor: {row['Yatırım Fırsat Skoru']} - MC: {row['Monte Carlo Olasılığı (%)']}\n"
         send_telegram_alert(test_mesaji)
         st.sidebar.success("Test alarmı gönderildi.")
 
@@ -371,11 +425,19 @@ if not analizli_df.empty:
                 mesaj += f"💰 Fiyat: {row['Fiyat']}\n"
                 mesaj += f"📊 Skor: <b>{skor}</b>\n"
                 mesaj += f"🎲 5 Günlük %10 Olasılığı: {row['Monte Carlo Olasılığı (%)']}\n"
-                mesaj += f"💵 10.000 TL Beklenen Ortalama Kâr: <b>{row['Beklenen Ortalama Kâr (10K TL)']} TL</b>\n"
+                mesaj += f"💵 <b>10.000 TL Yatırım Beklenen Getiri:</b> {row['Tahmini Getiri (10K TL)']} TL\n"
                 mesaj += f"💡 Neden: {row['Neden Alınmalı?']}"
                 
                 send_telegram_alert(mesaj)
                 st.session_state['alim_bildirim_zamanlari'][hisse] = now
+                
+                # Sinyali günlüğe kaydet (Gerçek Performans Takibi için)
+                fiyat_parse = float(row['Fiyat'].replace(' TL', '').replace(',', '.'))
+                st.session_state['sinyal_gunlugu'].append({
+                    "tarih": str(now.date()),
+                    "hisse": hisse,
+                    "alim_fiyati": fiyat_parse
+                })
 
         gun_float = analizli_df['Gün %'].str.replace('%', '').astype(float)
         ani_dusus_df = analizli_df[gun_float <= -3.0]
@@ -394,6 +456,39 @@ if not analizli_df.empty:
                 send_telegram_alert(mesaj)
                 st.session_state['satis_bildirim_zamanlari'][hisse] = now
 
+        # --- GÜNLÜK PERFORMANS RAPORU TELEGRAM BİLDİRİMİ (Günde 1 Kez, Saat 18:00 Sonrası) ---
+        if 'performans_bildirim_tarihi' not in st.session_state or st.session_state['performans_bildirim_tarihi'] != str(now.date()):
+            if now.hour >= 18:  # Piyasa kapandıktan sonra rapor gönder
+                
+                performans_df = performans_raporu_olustur(st.session_state['sinyal_gunlugu'])
+                
+                if not performans_df.empty:
+                    # Telegram Mesajını Oluştur
+                    mesaj = "📊 <b>GÜNLÜK GERÇEK PERFORMANS RAPORU</b>\n\n"
+                    mesaj += "Sinyal verilen hisselerin bugünkü gerçek sonuçları:\n"
+                    mesaj += "----------------------------------\n"
+                    
+                    toplam_getiri = 0
+                    
+                    for _, row in performans_df.iterrows():
+                        hisse = row['Hisse']
+                        kar_zarar = row['10.000 TL Kazanç/Zarar (TL)']
+                        yuzde = row['Güncel Getiri (%)']
+                        
+                        # Renkli emoji ekle (Kazandıysa yeşil, kaybettiyse kırmızı)
+                        durum_emoji = "🟢" if kar_zarar > 0 else "🔴"
+                        
+                        mesaj += f"{durum_emoji} <b>{hisse}</b>: {yuzde}% ({kar_zarar} TL)\n"
+                        toplam_getiri += kar_zarar
+                    
+                    mesaj += "----------------------------------\n"
+                    mesaj += f"💰 <b>Toplam 10.000 TL'lik Kazanç/Zarar:</b> {toplam_getiri:.2f} TL"
+                    
+                    send_telegram_alert(mesaj)
+                    
+                    # Bugün için bildirim gönderildi olarak işaretle
+                    st.session_state['performans_bildirim_tarihi'] = str(now.date())
+
 # --- SOL MENÜ VE DİĞER SEKMELER ---
 with st.sidebar:
     st.header("📋 Keşfet")
@@ -408,6 +503,11 @@ with st.sidebar:
     if st.button("🔬 Detaylı Analiz", use_container_width=True): st.session_state['menu'] = "Detaylı Analiz"
     if st.button("💎 Orijinal Hisseler", use_container_width=True): st.session_state['menu'] = "Orijinal Hisseler"
     if st.button("📈 Grafik Analizi", use_container_width=True): st.session_state['menu'] = "Grafik Analizi"
+    
+    st.markdown("---")
+    st.header("📊 Sonuç Takibi")
+    if st.button("🎯 Gerçek Performans", use_container_width=True): st.session_state['menu'] = "Gerçek Performans"
+    
     st.markdown("---")
     if 'menu' not in st.session_state: st.session_state['menu'] = "Radar"
     menu_secim = st.session_state['menu']
@@ -465,13 +565,37 @@ with tab8:
     st.subheader("🔥 Yüksek Potansiyelli Hisseler")
     if not analizli_df.empty:
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
-        st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Monte Carlo Olasılığı (%)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Beklenen Ortalama Kâr (10K TL)', 'Neden Alınmalı?']], width='stretch', hide_index=True)
+        st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Monte Carlo Olasılığı (%)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Tahmini Getiri (10K TL)', 'Neden Alınmalı?']], width='stretch', hide_index=True)
         st.success("Piyasa açıkken skoru 70+ ve olasılığı %15+ olan hisseler otomatik bildirilir. Ayrıca günlük %3'ten fazla düşenler için satış uyarısı yapılır.")
 
 # --- SOL MENÜ MODÜLLERİ ---
 st.markdown("---")
 
-if menu_secim == "Temel Analiz":
+# YENİ MODÜL: Gerçek Performans Takibi
+if menu_secim == "Gerçek Performans":
+    st.subheader("🎯 Gerçek Performans Takibi (Geçmiş Sinyallerin Sonuçları)")
+    st.info("Bu tablo, verdiğimiz **Al** sinyallerinin ertesi gün ve sonraki günlerde gerçekte ne kadar kazandırdığını gösterir. Hesaplamalar **yfinance** (açılış/kapanış verileri) kullanılarak yapılır.")
+    
+    # Kayıtlı sinyallerden rapor oluştur
+    if 'sinyal_gunlugu' in st.session_state and st.session_state['sinyal_gunlugu']:
+        rapor_df = performans_raporu_olustur(st.session_state['sinyal_gunlugu'])
+        
+        if not rapor_df.empty:
+            st.dataframe(rapor_df, width='stretch', hide_index=True)
+            
+            # Toplam kazanç özeti
+            toplam_kar = rapor_df['10.000 TL Kazanç/Zarar (TL)'].sum()
+            ort_getiri = rapor_df['Güncel Getiri (%)'].mean()
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Toplam 10K TL Kazanç/Zarar", f"{toplam_kar:.2f} TL")
+            col2.metric("Ortalama Getiri", f"%{ort_getiri:.2f}")
+        else:
+            st.warning("Henüz hesaplanabilir sinyal verisi yok. (Veriler yfinance üzerinden çekilemedi veya sinyal listesi boş).")
+    else:
+        st.warning("Henüz kayıtlı sinyal yok. Sistem Alım sinyali verdiğinde burada listelenecektir.")
+
+elif menu_secim == "Temel Analiz":
     st.subheader("📈 Profesyonel Temel Analiz")
     
     macro = get_macro_data()
@@ -529,7 +653,6 @@ elif menu_secim == "Grafik Analizi":
     if not analizli_df.empty:
         secilen = st.multiselect("Hisse Seçin", options=analizli_df['Hisse'].tolist(), default=["THYAO", "GARAN"])
         if st.button("Grafikleri Çiz"):
-            import yfinance as yf
             fig = go.Figure()
             for hisse in secilen:
                 veri = yf.download(f"{hisse}.IS", period="6mo", progress=False, auto_adjust=False)
