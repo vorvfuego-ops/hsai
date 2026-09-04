@@ -51,7 +51,7 @@ def send_telegram_alert(message):
         response = requests.post(url, json=payload, timeout=5)
         if response.status_code != 200:
             st.warning(f"Telegram Hatası: {response.text}")
-            print(f"Telegram Hatası: {response.text}")  # Loglara da yaz
+            print(f"Telegram Hatası: {response.text}")
     except Exception as e:
         st.error(f"Telegram Ayarları Hatalı: {e}")
         print(f"Telegram Ayarları Hatalı: {e}")
@@ -239,8 +239,13 @@ def hesapla_ai_verileri(df):
 
     df['Monte Carlo Olasılığı (%)'] = df.apply(monte_carlo_olasilik, axis=1).fillna(0)
 
-    # 10.000 TL Üzerinden Tahmini Getiri Hesabı
-    df['Tahmini Getiri (10K TL)'] = df.apply(lambda row: (10000 * (row['Monte Carlo Olasılığı (%)'] / 100) * 0.10), axis=1).round(2)
+    # --- YENİ EKLENEN ALAN: BEKLENEN ORTALAMA KÂR (10.000 TL İÇİN) ---
+    # Hedef %10 artış. 10.000 TL yatırırsak hedef kazanç 1.000 TL'dir.
+    # Ancak Monte Carlo olasılığı %15 ise, "beklenen ortalama kâr" = 1.000 TL * 0.15 = 150 TL olur.
+    # Bu, kullanıcıya somut bir rakam verir.
+    df['Beklenen Ortalama Kâr (10K TL)'] = df.apply(
+        lambda row: (10000 * 0.10) * (row['Monte Carlo Olasılığı (%)'] / 100), axis=1
+    ).round(2)
 
     def hesapla_skor(row):
         skor = 50
@@ -323,24 +328,21 @@ with st.spinner("Quantum YZ çalışıyor..."):
 # --- TELEGRAM BİLDİRİM KONTROLÜ (SADECE HAFTA İÇİ, SAAT KONTROLÜ YOK) ---
 if not analizli_df.empty:
     now = datetime.now()
-    # Piyasa kontrolü: Sadece hafta içi (Pazartesi - Cuma) çalışsın. Saat farkı sorununu çözmek için saat kontrolü kaldırıldı.
-    hafta_ici = now.weekday() < 5  # 0=Pazartesi, 4=Cuma
+    hafta_ici = now.weekday() < 5
     
-    # Oturum başlangıcında zamanlayıcıları sıfırla
     if 'bildirilen_tarih' not in st.session_state or st.session_state['bildirilen_tarih'] != str(now.date()):
-        st.session_state['alim_bildirim_zamanlari'] = {}  # {Hisse: datetime}
-        st.session_state['satis_bildirim_zamanlari'] = {}  # {Hisse: datetime}
+        st.session_state['alim_bildirim_zamanlari'] = {}
+        st.session_state['satis_bildirim_zamanlari'] = {}
         st.session_state['bildirilen_tarih'] = str(now.date())
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔔 Telegram Testi")
     
-    # Manuel Test Butonu (Her zaman çalışır)
     if st.sidebar.button("Top 10 Test Alarmı Gönder", key="test_top10_btn"):
         top10 = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(10)
         test_mesaji = "🧪 <b>MANUEL TEST ALARMI (Top 10)</b>\n\n"
         for _, row in top10.iterrows():
-            test_mesaji += f"📈 {row['Hisse']} - Skor: {row['Yatırım Fırsat Skoru']} - MC: {row['Monte Carlo Olasılığı (%)']}\n"
+            test_mesaji += f"📈 {row['Hisse']} - Skor: {row['Yatırım Fırsat Skoru']} - MC: {row['Monte Carlo Olasılığı (%)']} - Beklenen Kâr: {row['Beklenen Ortalama Kâr (10K TL)']} TL\n"
         send_telegram_alert(test_mesaji)
         st.sidebar.success("Test alarmı gönderildi.")
 
@@ -349,10 +351,7 @@ if not analizli_df.empty:
         send_telegram_alert(test_mesaji)
         st.sidebar.success("Test mesajı gönderildi. Telegram'ı kontrol edin.")
 
-    # --- OTOMATİK ALARMLAR (15 Dakikada 1 Kez Mantığı ile) ---
-    if hafta_ici:  # Sadece hafta içi çalış
-        # 1) ALIM SİNYALİ (Skor >= 70 ve MC > 15)
-        # Monte Carlo sütunu şu an string (%33.33), sayıya çevirip filtreliyoruz
+    if hafta_ici:
         mc_float = analizli_df['Monte Carlo Olasılığı (%)'].str.replace('%', '').astype(float)
         skor_float = analizli_df['Yatırım Fırsat Skoru'].astype(float)
         
@@ -362,7 +361,6 @@ if not analizli_df.empty:
             hisse = row['Hisse']
             son_bildirim_zamani = st.session_state['alim_bildirim_zamanlari'].get(hisse)
             
-            # Eğer hiç bildirim yoksa VEYA son bildirimden 15 dakika geçtiyse
             if son_bildirim_zamani is None or (now - son_bildirim_zamani).total_seconds() > 900:
                 skor = row['Yatırım Fırsat Skoru']
                 
@@ -373,13 +371,12 @@ if not analizli_df.empty:
                 mesaj += f"💰 Fiyat: {row['Fiyat']}\n"
                 mesaj += f"📊 Skor: <b>{skor}</b>\n"
                 mesaj += f"🎲 5 Günlük %10 Olasılığı: {row['Monte Carlo Olasılığı (%)']}\n"
-                mesaj += f"💵 10.000 TL Beklenen Getiri: <b>{row['Tahmini Getiri (10K TL)']} TL</b>\n"
+                mesaj += f"💵 10.000 TL Beklenen Ortalama Kâr: <b>{row['Beklenen Ortalama Kâr (10K TL)']} TL</b>\n"
                 mesaj += f"💡 Neden: {row['Neden Alınmalı?']}"
                 
                 send_telegram_alert(mesaj)
                 st.session_state['alim_bildirim_zamanlari'][hisse] = now
 
-        # 2) ANİ DÜŞÜŞ (SATIŞ) SİNYALİ (Günlük %-3 altı, 15 dk sınırı ile)
         gun_float = analizli_df['Gün %'].str.replace('%', '').astype(float)
         ani_dusus_df = analizli_df[gun_float <= -3.0]
         
@@ -468,7 +465,7 @@ with tab8:
     st.subheader("🔥 Yüksek Potansiyelli Hisseler")
     if not analizli_df.empty:
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
-        st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Monte Carlo Olasılığı (%)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Tahmini Getiri (10K TL)', 'Neden Alınmalı?']], width='stretch', hide_index=True)
+        st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Monte Carlo Olasılığı (%)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Beklenen Ortalama Kâr (10K TL)', 'Neden Alınmalı?']], width='stretch', hide_index=True)
         st.success("Piyasa açıkken skoru 70+ ve olasılığı %15+ olan hisseler otomatik bildirilir. Ayrıca günlük %3'ten fazla düşenler için satış uyarısı yapılır.")
 
 # --- SOL MENÜ MODÜLLERİ ---
@@ -477,7 +474,6 @@ st.markdown("---")
 if menu_secim == "Temel Analiz":
     st.subheader("📈 Profesyonel Temel Analiz")
     
-    # Makro Veriler
     macro = get_macro_data()
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Enflasyon", f"%{macro['enflasyon']}")
@@ -487,7 +483,6 @@ if menu_secim == "Temel Analiz":
     
     st.markdown("---")
     
-    # Hisse Bazında Temel Veriler
     st.subheader("📊 Hisse Bazında Temel Analiz Verileri")
     if not analizli_df.empty:
         temel_cols = ['Hisse', 'Fiyat', 'Piyasa Değeri', 'F/K', 'PD/DD', 
@@ -495,13 +490,11 @@ if menu_secim == "Temel Analiz":
                       'Sektörel Değerleme', 'Yatırım Fırsat Skoru', 'AI Sinyal']
         df_temel = analizli_df[temel_cols].copy()
         
-        # Sayısal sütunları formatla
         for col in ['F/K', 'PD/DD', 'ROE', 'Net Marj', 'Borç/Özkaynak', 'Temettü Verimi']:
             df_temel[col] = df_temel[col].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
         
         st.dataframe(df_temel, use_container_width=True, hide_index=True)
         
-        # Detaylı Analiz İçin Hisse Seçimi
         st.markdown("---")
         st.subheader("🔍 Detaylı Hisse Analizi")
         secilen_hisse = st.selectbox("Bir Hisse Seçin", options=analizli_df['Hisse'].tolist(), key="temel_detay")
