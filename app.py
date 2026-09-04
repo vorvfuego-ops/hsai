@@ -330,7 +330,11 @@ if not analizli_df.empty:
         st.sidebar.success("Test mesajı gönderildi. Telegram'ı kontrol edin.")
 
     if piyasa_acik:
-        bildirim_listesi = analizli_df[(analizli_df['Yatırım Fırsat Skoru'] >= 75) & (analizli_df['Monte Carlo Olasılığı (%)'].astype(str).str.replace('%', '').astype(float) > 15)]
+        # Olasılık değerini doğru okumak için % işaretini kaldır
+        bildirim_listesi = analizli_df[
+            (analizli_df['Yatırım Fırsat Skoru'] >= 75) & 
+            (analizli_df['Monte Carlo Olasılığı (%)'].str.replace('%', '').astype(float) > 15)
+        ]
         
         for _, row in bildirim_listesi.iterrows():
             hisse = row['Hisse']
