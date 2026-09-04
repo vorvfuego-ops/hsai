@@ -8,7 +8,15 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import hashlib
+import os
+
+# --- YFINANCE KURULUMU VE PERFORMANS İYİLEŞTİRMELERİ ---
+# YFinance kütüphanesini güvenli bir klasöre yönlendirerek 429 hatalarını azaltır
+YFINANCE_CACHE_DIR = "/tmp/yfinance-cache"
+os.makedirs(YFINANCE_CACHE_DIR, exist_ok=True)
+
 import yfinance as yf
+yf.set_tz_cache_location(YFINANCE_CACHE_DIR) 
 
 warnings.filterwarnings("ignore")
 
