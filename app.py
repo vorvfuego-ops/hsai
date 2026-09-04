@@ -218,7 +218,7 @@ def hesapla_ai_verileri(df):
     else:
         backtest_skoru = 0
 
-    # Monte Carlo Simülasyonu
+    # Monte Carlo Simülasyonu (Sayısal olarak hesaplanıp korunuyor)
     def monte_carlo_olasilik(row):
         fiyat = safe_float(row['Fiyat'])
         gunluk_degisim = abs(safe_float(row['Gün %'])) / 100
@@ -235,8 +235,8 @@ def hesapla_ai_verileri(df):
         olasilik = np.mean(fiyat_5_gun >= fiyat * 1.10) * 100
         return olasilik
 
-    df['Monte Carlo Olasılığı (%)'] = df.apply(monte_carlo_olasilik, axis=1)
-    df['Monte Carlo Olasılığı (%)'] = df['Monte Carlo Olasılığı (%)'].fillna(0)
+    # Hesaplama aşamasında string'e çevirmiyoruz (Sayısal kalır)
+    df['Monte Carlo Olasılığı (%)'] = df.apply(monte_carlo_olasilik, axis=1).fillna(0)
 
     # 10.000 TL Üzerinden Tahmini Getiri Hesabı
     df['Tahmini Getiri (10K TL)'] = df.apply(lambda row: (10000 * (row['Monte Carlo Olasılığı (%)'] / 100) * 0.10), axis=1).round(2)
@@ -271,8 +271,8 @@ def hesapla_ai_verileri(df):
     def sinyal_uret(row):
         skor = safe_float(row['Yatırım Fırsat Skoru'])
         if skor >= 75: return "🟢 Mükemmel Al"
-        elif skor >= 65: return "🟢 Güçlü Al"
-        elif skor >= 55: return "🔵 Al"
+        elif skor >= 70: return "🟢 Güçlü Al"
+        elif skor >= 60: return "🔵 Al"
         elif skor >= 45: return "🟡 İzle"
         else: return "⚪ Nötr"
     
@@ -296,9 +296,11 @@ def hesapla_ai_verileri(df):
     
     df['Neden Alınmalı?'] = df.apply(neden_yukselir, axis=1)
     
+    # Görselleştirme için string'e çeviriyoruz
     df['Tavan Potansiyeli (%)'] = df['Tavan Potansiyeli (%)'].apply(format_percent)
     df['Gün %'] = df['Gün %'].apply(format_percent)
     df['Monte Carlo Olasılığı (%)'] = df['Monte Carlo Olasılığı (%)'].round(2).apply(lambda x: f"%{x}")
+    
     for col in ['Getiri % (Son 1 hafta)', 'Getiri % (Son 1 ay)', 'Getiri % (Son 3 ay)', 
                 'Getiri % (Son 6 ay)', 'Getiri % (Yılbaşından)', 'Getiri % (Son 1 yıl)', 
                 'Getiri % (Son 3 yıl)', 'Getiri % (Son 5 yıl)']:
@@ -320,25 +322,18 @@ with st.spinner("Quantum YZ çalışıyor..."):
 # --- PİYASA SAATİ KONTROLÜ VE TELEGRAM BİLDİRİMİ ---
 if not analizli_df.empty:
     now = datetime.now()
-    piyasa_acik = (now.weekday() < 5) and (now.hour >= 9 and now.hour < 18)
+    piyasa_acik = (now.weekday() < 5) and (now.hour >= 9 and now.hour < 19)
     
-    # Oturum başlangıcında listeleri sıfırla
+    # Oturum başlangıcında zamanlayıcıları sıfırla (Kilitlenmeyi önlemek için yeniden yapılandırıldı)
     if 'bildirilen_tarih' not in st.session_state or st.session_state['bildirilen_tarih'] != str(now.date()):
-        st.session_state['bildirilen_alimlar'] = []
-        st.session_state['bildirilen_satislar'] = []
+        st.session_state['alim_bildirim_zamanlari'] = {} # {Hisse: datetime}
+        st.session_state['satis_bildirim_zamanlari'] = {} # {Hisse: datetime}
         st.session_state['bildirilen_tarih'] = str(now.date())
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("🔔 Telegram Testi")
     
-    # YENİ: Geçmişi Sıfırla Butonu
-    if st.sidebar.button("Alarm Geçmişini Sıfırla", key="clear_history_btn"):
-        st.session_state['bildirilen_alimlar'] = []
-        st.session_state['bildirilen_satislar'] = []
-        st.session_state['bildirilen_tarih'] = "N/A" # Tarihi değiştirerek reset'i zorla
-        st.sidebar.success("Alarm geçmişi sıfırlandı!")
-
-    # YENİ: Top 10 Test Alarmı
+    # Manuel Test Butonu (Her zaman çalışır)
     if st.sidebar.button("Top 10 Test Alarmı Gönder", key="test_top10_btn"):
         top10 = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(10)
         test_mesaji = "🧪 <b>MANUEL TEST ALARMI (Top 10)</b>\n\n"
@@ -352,20 +347,23 @@ if not analizli_df.empty:
         send_telegram_alert(test_mesaji)
         st.sidebar.success("Test mesajı gönderildi. Telegram'ı kontrol edin.")
 
+    # --- OTOMATİK ALARMLAR (15 Dakikada 1 Kez Mantığı ile) ---
     if piyasa_acik:
-        # 1) ALIM SİNYALİ KONTROLÜ (Skor >= 65 ve MC > 15)
-        # Olasılık değerini doğru okumak için % işaretini kaldır
+        # 1) ALIM SİNYALİ (Skor >= 70 ve MC > 15)
+        # Not: DataFrame'de MC sütunu '%33.33' string'ine dönüştürülmüştü. Bu yüzden tekrar sayıya çeviriyoruz.
         bildirim_listesi = analizli_df[
-            (analizli_df['Yatırım Fırsat Skoru'] >= 65) & 
+            (analizli_df['Yatırım Fırsat Skoru'] >= 70) & 
             (analizli_df['Monte Carlo Olasılığı (%)'].str.replace('%', '').astype(float) > 15)
         ]
         
         for _, row in bildirim_listesi.iterrows():
             hisse = row['Hisse']
-            if hisse not in st.session_state['bildirilen_alimlar']:
+            son_bildirim_zamani = st.session_state['alim_bildirim_zamanlari'].get(hisse)
+            
+            # Eğer hiç bildirim yoksa VEYA son bildirimden 15 dakika geçtiyse
+            if son_bildirim_zamani is None or (now - son_bildirim_zamani).total_seconds() > 900:
                 skor = row['Yatırım Fırsat Skoru']
                 
-                # Skor 75+ ise mükemmel etiketi koy
                 baslik = "🚀 MÜKEMMEL YATIRIM FIRSATI!" if skor >= 75 else "📈 Güçlü Alım Sinyali"
                 
                 mesaj = f"<b>{baslik}</b>\n\n"
@@ -377,17 +375,18 @@ if not analizli_df.empty:
                 mesaj += f"💡 Neden: {row['Neden Alınmalı?']}"
                 
                 send_telegram_alert(mesaj)
-                st.session_state['bildirilen_alimlar'].append(hisse)
+                st.session_state['alim_bildirim_zamanlari'][hisse] = now
 
-        # 2) ANİ DÜŞÜŞ (SATIŞ) SİNYALİ KONTROLÜ
-        # Günlük % değişim -3'ün altına düşerse kullanıcıyı uyar
+        # 2) ANİ DÜŞÜŞ (SATIŞ) SİNYALİ (Günlük %-3 altı, 15 dk sınırı ile)
         ani_dusus_df = analizli_df[
             analizli_df['Gün %'].str.replace('%', '').astype(float) <= -3.0
         ]
         
         for _, row in ani_dusus_df.iterrows():
             hisse = row['Hisse']
-            if hisse not in st.session_state['bildirilen_satislar']:
+            son_bildirim_zamani = st.session_state['satis_bildirim_zamanlari'].get(hisse)
+            
+            if son_bildirim_zamani is None or (now - son_bildirim_zamani).total_seconds() > 900:
                 mesaj = f"🔻 <b>ANİ DÜŞÜŞ (SATIŞ UYARISI)</b>\n\n"
                 mesaj += f"📉 Hisse: <b>{hisse}</b>\n"
                 mesaj += f"💰 Fiyat: {row['Fiyat']}\n"
@@ -395,7 +394,7 @@ if not analizli_df.empty:
                 mesaj += f"⚠️ Zarar etmemek için pozisyonunuzu kontrol edin!"
                 
                 send_telegram_alert(mesaj)
-                st.session_state['bildirilen_satislar'].append(hisse)
+                st.session_state['satis_bildirim_zamanlari'][hisse] = now
 
 # --- SOL MENÜ VE DİĞER SEKMELER ---
 with st.sidebar:
@@ -469,7 +468,7 @@ with tab8:
     if not analizli_df.empty:
         df_tavan = analizli_df.sort_values(by='Yatırım Fırsat Skoru', ascending=False).head(20)
         st.dataframe(df_tavan[['Hisse', 'Fiyat', 'Yatırım Fırsat Skoru', 'Monte Carlo Olasılığı (%)', 'Tavan Potansiyeli (%)', 'RSI', 'AI Sinyal', 'Tahmini Getiri (10K TL)', 'Neden Alınmalı?']], width='stretch', hide_index=True)
-        st.success("Piyasa açıkken skoru 65+ ve olasılığı %15+ olan hisseler otomatik bildirilir. Ayrıca günlük %3'ten fazla düşenler için satış uyarısı yapılır.")
+        st.success("Piyasa açıkken skoru 70+ ve olasılığı %15+ olan hisseler otomatik bildirilir. Ayrıca günlük %3'ten fazla düşenler için satış uyarısı yapılır.")
 
 # --- SOL MENÜ MODÜLLERİ ---
 st.markdown("---")
